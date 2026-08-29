@@ -1,0 +1,19 @@
+# Secret environment files
+.env
+.env.local
+frontend/.env
+backend/.env
+
+# JavaScript
+node_modules/
+frontend/dist/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# VS Code and operating system
+.vscode/
+.DS_Store
