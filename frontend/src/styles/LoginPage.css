@@ -1,0 +1,2 @@
+.login-page .form-container { padding-block: 72px; }
+@media (max-width: 700px) { .login-page .form-container { padding-block: 32px; } }

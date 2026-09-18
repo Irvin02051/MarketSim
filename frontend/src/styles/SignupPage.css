@@ -1,0 +1,7 @@
+.signup-page .form-container { padding-block: 38px; }
+.signup-page .form-heading > p { margin-bottom: 25px; }
+.signup-page .form-field { margin-bottom: 16px; }
+.terms-group { margin: 5px 0 23px; }
+.terms-group .field-hint { padding-left: 24px; }
+.signup-page .demo-note { margin-top: 24px; }
+@media (max-width: 700px) { .signup-page .form-container { padding-block: 32px; } }
