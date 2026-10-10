@@ -1,8 +1,7 @@
 # Secret environment files
 .env
-.env.local
-frontend/.env
-backend/.env
+.env.*
+!.env.example
 
 # JavaScript
 node_modules/
@@ -11,8 +10,10 @@ frontend/dist/
 # Python
 __pycache__/
 *.pyc
+*.pyo
 .venv/
 venv/
+.ruff_cache/
 
 # VS Code and operating system
 .vscode/
