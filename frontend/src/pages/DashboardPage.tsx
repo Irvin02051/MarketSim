@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
+import ServiceStatus from '../components/ServiceStatus'
 import '../styles/DashboardPage.css'
 
 // Fictional display constants only; no live pricing or trading calculations.
@@ -45,6 +46,8 @@ export default function DashboardPage() {
           <h1 ref={headingRef} tabIndex={-1}>Portfolio overview</h1>
           <p>Welcome to MarketSim. Explore a sample portfolio and get familiar with your future investing workspace.</p>
         </div>
+
+        <ServiceStatus />
 
         <section className="dashboard-summary" aria-label="Demo portfolio summary">
           {summaryCards.map((card) => (
