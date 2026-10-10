@@ -1,2 +1,5 @@
 .login-page .form-container { padding-block: 72px; }
+.login-page .login-demo-link { margin: 22px 0 0; text-align: center; font-size: 13px; line-height: 1.6; }
+.login-page .login-demo-link a { display: inline-block; padding: 10px 14px; border: 1px solid #b8daca; border-radius: 7px; font-weight: 600; text-decoration: none; }
+.login-page .login-demo-link a:hover { background: #eaf5ef; text-decoration: underline; }
 @media (max-width: 700px) { .login-page .form-container { padding-block: 32px; } }
