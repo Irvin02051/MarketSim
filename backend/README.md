@@ -77,3 +77,33 @@ Press `Control-C` in the server terminal to stop your server. Then run:
 ```sh
 deactivate
 ```
+
+## Dashboard connection and CORS
+
+Run this API and the frontend in separate terminals. Keep the backend command
+above running; in the frontend terminal use:
+
+```sh
+cd /Users/irvin/Documents/MarketSim/frontend
+if [ ! -e .env.local ]; then cp -n .env.example .env.local; fi
+npm run dev -- --port 5173 --strictPort
+```
+
+Restart Vite after changing `.env.local`. Never place secrets in frontend
+`VITE_` variables. Do not stop another project's server if a port is occupied.
+See [frontend instructions](../frontend/README.md) for connection, unavailable,
+retry, keyboard, and mobile checks.
+
+CORS allows only `http://localhost:5173` and `http://127.0.0.1:5173`, with GET
+and credentials disabled. No custom request headers are needed. An unlisted
+origin receives no `Access-Control-Allow-Origin` header; CORS is browser
+access control, not authentication. The health response is unchanged.
+
+```sh
+curl --fail-with-body -i -H 'Origin: http://localhost:5173' http://127.0.0.1:8000/health
+curl --fail-with-body -i -H 'Origin: http://localhost:5174' http://127.0.0.1:8000/health
+```
+
+The first response should include `Access-Control-Allow-Origin: http://localhost:5173`;
+the second should omit that header. Both may return HTTP 200: curl does not
+apply the browser's CORS policy.
