@@ -8,7 +8,9 @@ from fastapi.responses import JSONResponse
 
 from app.gemini_client import configured_client
 from app.market_data import MarketData, Quote, QuoteError
+from app.research_agent import AgentInput, AgentResult, ResearchAgent
 from app.research_explanation import ResearchExplanation, ResearchInput, ResearchResult
+from app.research_explanation import explanation as research_outcome
 
 
 @asynccontextmanager
@@ -22,6 +24,7 @@ async def lifespan(app: FastAPI):
         app.state.market_data = service
         model = configured_client()
         app.state.research = ResearchExplanation(model)
+        app.state.research_agent = ResearchAgent(model)
         try:
             yield
         finally:
@@ -62,3 +65,23 @@ async def get_stock_quote(symbol: str, request: Request) -> Quote:
 async def research(body: ResearchInput, request: Request):
     status, result = await request.app.state.research.run(request.app.state.market_data, body)
     return JSONResponse(status_code=status, content=result.model_dump(mode='json'))
+
+
+@app.post('/api/research/agent', response_model=AgentResult, responses={
+    429: {'model': AgentResult, 'description': 'Research request already active'},
+    503: {'model': AgentResult, 'description': 'Research unavailable'},
+})
+async def research_agent(body: AgentInput, request: Request):
+    agent = request.app.state.research_agent
+    result = AgentResult(question=body.question, explanation=research_outcome('research_unavailable'))
+    if agent.model is None:
+        return JSONResponse(status_code=503, content=result.model_dump(mode='json'))
+    # Share admission with /api/research; never queue or acquire its lock twice.
+    active = request.app.state.research.active
+    if not active.acquire(blocking=False):
+        result.explanation = research_outcome('research_busy')
+        return JSONResponse(status_code=429, content=result.model_dump(mode='json'))
+    try:
+        return await agent.run(request.app.state.market_data, body)
+    finally:
+        active.release()

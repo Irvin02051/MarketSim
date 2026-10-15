@@ -247,8 +247,8 @@ Keep a free-tier project unbilled; do not submit personal or confidential data.
 
 ## Internal research agent (Milestone C foundation)
 
-`app.research_agent.ResearchAgent` is an internal callable component. It is not
-registered with FastAPI or exposed through the frontend. The existing
+`app.research_agent.ResearchAgent` remains a callable component and is now
+exposed through `POST /api/research/agent`, without frontend integration. The existing
 `POST /api/research` retains its Milestone B behavior and question templates.
 No dependencies, configuration variables, or market-provider behavior change.
 
@@ -319,14 +319,14 @@ The result contains `question`, nullable `quotes`, `explanation`, `model_calls`,
 `tool_requests`, and safe `tool_outcomes` (tool name, validated symbols, outcome
 code). `tool_requests` counts all requests observed, including a rejected batch,
 so it can exceed two even though no more than two invocations execute. There is
-no HTTP status mapping for this internal component.
+no HTTP status mapping inside the component; the route applies the contract below.
 
 Existing safe explanation codes are reused, with `tool_budget_exhausted` and
 `model_budget_exhausted` added. Deadline failures retain completed quote outcomes;
 missing outcomes become safe timeout errors without new provider calls. Shared
 quote fetches retain the existing cancellation policy and can finish in the
-service cache after a caller times out. There is no new process-wide admission
-control or daily spending cap; those are future endpoint integration decisions.
+service cache after a caller times out. The HTTP route shares the existing
+process-local research admission lock. There is no daily spending cap.
 
 Official references checked for the installed `google-genai==2.31.0`:
 
@@ -347,3 +347,63 @@ budgets, deadlines, safe failures, and grounded output. No real key is needed:
 ```sh
 MARKET_DATA_PROVIDER=demo RESEARCH_ENABLED=false .venv/bin/python -m unittest discover -s tests -v
 ```
+
+
+## Research agent HTTP endpoint
+
+`POST /api/research/agent` accepts exactly one field:
+
+```json
+{"question":"Compare Apple and Microsoft’s reported percentage changes."}
+```
+
+The question must be a string, trimmed to 1–1,000 characters. Missing, blank,
+non-string, oversized questions and extra fields (including `symbols`) receive
+HTTP 422 with FastAPI validation details, before any agent or quote call.
+The model selects supported symbols through the existing validated `get_quotes`
+tool; the HTTP route does not implement another loop.
+
+| HTTP | Response |
+| --- | --- |
+| 503 | `AgentResult` with `research_unavailable` when research is disabled or configuration is missing/invalid; no agent/model calls |
+| 429 | `AgentResult` with `research_busy` when either research endpoint is active; no queued work |
+| 200 | Completed `AgentResult`; inspect `explanation.status` and `explanation.code`, including safe failure/timeout outcomes |
+| 422 | FastAPI request-validation error |
+
+The typed `AgentResult` schema is published in `/openapi.json`. It contains the
+trimmed `question`, nullable `quotes` (source evidence, metadata, fictional labels,
+and backend calculations), `explanation` (status, code, safe message, validated
+findings), `model_calls`, `tool_requests`, and `tool_outcomes` (tool, validated
+symbols, code). Configuration and busy results have null quotes, zero counters,
+and no tool outcomes. A 200 response does not imply an answered question: quota,
+refusal, invalid model output, unsupported requests, exhausted budgets, partial
+provider results, and timeouts remain structured agent outcomes. No raw errors,
+internal prompts, conversation, signatures, or hidden reasoning are returned.
+
+Both research endpoints share one configured Gemini client, closed once at
+application shutdown, and one nonblocking admission lock. The slot is released
+on success, failure, timeout, and cancellation. The existing 30-second agent
+deadline, three-model-call/two-tool-invocation budgets, evidence validation,
+fictional labeling, and quote cache policy are unchanged. `/api/research` keeps
+its existing request, response, and status behavior.
+
+For a later **manual demo-data/live-Gemini check**, stop the old backend first.
+With your key already in the ignored local `.env`, run from `backend/`:
+
+```sh
+RESEARCH_ENABLED=true MARKET_DATA_PROVIDER=demo .venv/bin/python -m uvicorn app.main:app --env-file .env --host 127.0.0.1 --port 8000
+```
+
+Then, from another terminal:
+
+```sh
+curl --fail-with-body -i http://127.0.0.1:8000/api/research/agent \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"Compare Apple and Microsoft reported percentage changes."}'
+```
+
+This sends a real request to Gemini but uses fictional market quotes. It was not
+run automatically. Keep loopback binding and one worker: there is no authentication
+or daily spending cap. CORS remains GET-only; no frontend behavior changes.
+Endpoint tests use mocks and require no key or `.env` loading. Live Gemini and
+market-provider behavior remain unverified.
