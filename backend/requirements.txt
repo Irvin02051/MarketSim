@@ -2,3 +2,4 @@ fastapi==0.143.0
 uvicorn==0.54.0
 httpx==0.28.1
 python-dotenv==1.2.4
+google-genai==2.31.0

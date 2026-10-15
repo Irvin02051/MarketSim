@@ -1,6 +1,7 @@
 # MarketSim API
 
-Minimal FastAPI backend with one application endpoint: `GET /health`.
+FastAPI backend with health, stock quotes, and optional research explanations.
+`GET /health`
 It returns HTTP 200 with `{"status":"ok","service":"marketsim-api"}`.
 This only confirms that the API process responds; it does not check database
 or market-data availability. No external service configuration is required.
@@ -60,15 +61,15 @@ with `--port` (for example, 8001); update the verification URLs to match.
 From `backend/`:
 
 ```sh
-.venv/bin/python -m ruff check app
-.venv/bin/python -m compileall -q app
+.venv/bin/python -m ruff check app tests
+MARKET_DATA_PROVIDER=demo .venv/bin/python -m unittest discover -s tests -v
 .venv/bin/python -m pip check
 ```
 
-There is no automated backend test suite yet. HTTP smoke checks against a
-running Uvicorn server verify basic routing and responses, not a full test suite.
+The unittest suite uses fictional fixtures and mocked external transports.
+It requires no API keys and performs no live model or market-provider requests.
 Virtual environments, bytecode, Ruff caches, and `.env`/`.env.*` files are ignored.
-A future `.env.example` may be tracked with placeholders only.
+The tracked `.env.example` contains configuration placeholders only.
 
 ## Stop
 
@@ -107,3 +108,139 @@ curl --fail-with-body -i -H 'Origin: http://localhost:5174' http://127.0.0.1:800
 The first response should include `Access-Control-Allow-Origin: http://localhost:5173`;
 the second should omit that header. Both may return HTTP 200: curl does not
 apply the browser's CORS policy.
+
+## Milestone B: local research explanations
+
+This is an LLM-assisted explanation endpoint, not a tool-calling agent.
+`POST /api/research` accepts a JSON object with exactly `question` and `symbols`:
+
+```json
+{"question":"Compare their reported percentage changes.","symbols":["AAPL","MSFT"]}
+```
+
+Questions are trimmed, then must contain 1–1,000 characters. Symbols use the
+existing validation: one to three unique supported symbols (AAPL, MSFT, NVDA),
+case-normalized, with no silent removal of invalid entries. Extra fields are rejected.
+
+The first version deliberately accepts three question templates:
+
+- `Compare their reported percentage changes.` (two symbols: ordered difference;
+  three symbols: ranking)
+- `Show their reported daily ranges.` (one to three symbols)
+- `Rank their reported percentage changes.` (two or three symbols)
+
+Case, whitespace, trailing question/exclamation/period punctuation, and replacing
+`their reported` with `the reported` or `reported` are accepted. Other wording
+gets an explicit clarification response without a model call. A single-symbol
+comparison/ranking returns unsupported with its quote evidence. This bounded
+vocabulary prevents unrelated advisory/historical questions from being answered
+by an apparently valid but irrelevant quote comparison.
+
+The endpoint calls internal `get_quotes()` directly, preserving its source quotes,
+metadata, errors, labels, Decimal calculations, operand order, and tied ranks.
+It never calls our own HTTP API. Partial failures, all-quote failures, and mismatched
+trading dates retain the completed evidence bundle and skip Gemini.
+
+For complete evidence, Gemini selects structured findings from backend-generated
+candidates. The backend validates finding types, exact calculation references,
+ordered evidence IDs, comparison direction, ranking order, ties, and completeness.
+It then renders numerical statements itself. No free-form model prose is returned.
+The response separates `quotes` (unchanged evidence/calculations) from `explanation`.
+JSON validity alone does not prove factual accuracy; relationship validation and
+backend rendering are required. User questions and evidence are untrusted data,
+never tool instructions. No tools, search grounding, or hidden reasoning are exposed.
+
+### Configuration and local startup
+
+Research is **disabled by default**. Health and stock quotes do not require Gemini.
+The example variable names/defaults are:
+
+```dotenv
+MARKET_DATA_PROVIDER=demo
+ALPHA_VANTAGE_API_KEY=
+RESEARCH_ENABLED=false
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-3.5-flash-lite
+```
+
+No `.env` file is loaded implicitly. From `backend/`, the following command
+explicitly keeps research disabled and market data fictional, even if conflicting
+values are inherited from your shell:
+
+```sh
+RESEARCH_ENABLED=false MARKET_DATA_PROVIDER=demo .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+For a future explicitly authorized live-model smoke test, prepare an ignored
+`backend/.env` locally using the example names. Keep credentials out of Git,
+frontend `VITE_*` variables, logs, and chat. Set `RESEARCH_ENABLED=true` only when
+ready to send data to Google. Explicitly load that file with the existing Uvicorn
+startup tooling (python-dotenv is already a dependency):
+
+```sh
+.venv/bin/python -m uvicorn app.main:app --env-file .env --host 127.0.0.1 --port 8000
+```
+
+Existing process environment variables take precedence over `.env` values.
+Use one worker and loopback binding. There is no real authentication; CORS remains
+GET-only and is not an authorization boundary. No frontend integration is included.
+Do not expose this endpoint publicly. This milestone was tested only with mocks.
+
+### Limits and HTTP behavior
+
+One active research request per process is allowed; excess requests are rejected
+immediately. The 30-second application deadline covers retrieval and generation,
+using Python-3.10-compatible `asyncio.wait_for`. The SDK transport timeout is
+20,000 milliseconds (20 seconds), with 1,024 maximum output tokens, one candidate,
+one attempt, automatic function calling disabled, and automatic continuation
+disabled. Client creation and cleanup are managed by the application lifespan.
+There is no paid fallback or retry loop. The limit is process-local, not a daily
+spending cap; multiple workers would each have their own limit.
+
+| HTTP | Body behavior |
+| --- | --- |
+| 422 | FastAPI request-validation error; no retrieval/model call |
+| 503 | Research envelope with `research_unavailable`; disabled, missing, or invalid configuration |
+| 429 | Research envelope with `research_busy`; no queued work |
+| 200 | Completed research attempt; inspect `explanation.status` and `explanation.code` |
+
+Every research envelope has `question`, nullable `quotes`, and `explanation`.
+`explanation` has `status`, `code`, a fixed safe `message`, and `findings`.
+Statuses are `answered`, `unsupported`, `clarification`, or `unavailable`.
+Successful findings include their references, relation, backend-rendered `statement`,
+and `statement_origin: "backend"`. No provider error text is returned.
+
+Unavailable codes include `incomplete_evidence`, `different_dates`, `model_quota`,
+`research_timeout`, `model_refusal`, `model_truncated`, `invalid_model_output`,
+`model_unavailable`, and `research_failed`. Unsupported/clarification codes are
+`unsupported_question` and `clarify_question`. The success code is `answered`.
+All explanation failures retain the quote bundle. If the total deadline interrupts
+retrieval, completed outcomes are replayed through `get_quotes()` without more
+service calls; missing outcomes become safe timeout errors. `quotes` is null when
+retrieval never started (configuration, busy, or clarification responses).
+The existing shared quote tasks/cache retain their original
+cancellation policy. No fictional fallback is substituted after provider failure.
+
+### SDK and verification
+
+Pinned `google-genai==2.31.0` declares Python >=3.10. Its SDK uses async
+`client.aio.models.generate_content`, JSON-schema output, `HttpRetryOptions(attempts=1)`,
+and `HttpOptions(timeout=20000)`. References reviewed:
+
+- [Official package metadata](https://pypi.org/pypi/google-genai/2.31.0/json)
+- [Official SDK documentation](https://googleapis.github.io/python-genai/)
+- [Pinned SDK option definitions](https://github.com/googleapis/python-genai/blob/v2.31.0/google/genai/types.py)
+
+Existing dependency pins are unchanged; transitive SDK dependencies are not locked.
+The tests exercise real SDK serialization/parsing through `httpx.MockTransport`,
+including errors and continuation suppression, in addition to orchestration and
+HTTP routing. They use fake credentials and block ordinary external HTTP transport.
+Python 3.10 syntax/APIs are preserved, but a Python 3.10 runtime test has not been run.
+
+Fictional data stays explicitly labeled; it cannot establish real market performance.
+Daily range is not historical volatility, price is not valuation, and one reported
+change is not momentum. Live model availability, free-tier quota, prompt quality,
+and live market-provider behavior remain unverified. Before any real Google use,
+review [free-tier pricing](https://ai.google.dev/gemini-api/docs/pricing) and
+[data handling/eligibility terms](https://ai.google.dev/gemini-api/terms).
+Keep a free-tier project unbilled; do not submit personal or confidential data.
