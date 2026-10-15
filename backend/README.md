@@ -244,3 +244,106 @@ and live market-provider behavior remain unverified. Before any real Google use,
 review [free-tier pricing](https://ai.google.dev/gemini-api/docs/pricing) and
 [data handling/eligibility terms](https://ai.google.dev/gemini-api/terms).
 Keep a free-tier project unbilled; do not submit personal or confidential data.
+
+## Internal research agent (Milestone C foundation)
+
+`app.research_agent.ResearchAgent` is an internal callable component. It is not
+registered with FastAPI or exposed through the frontend. The existing
+`POST /api/research` retains its Milestone B behavior and question templates.
+No dependencies, configuration variables, or market-provider behavior change.
+
+The internal API takes an already constructed Gemini adapter and quote service:
+
+```python
+# Illustrative integration only; the test suite supplies mocked transports.
+agent = ResearchAgent(model)
+result = await agent.run(market_data, {
+    "question": "Compare Apple and Microsoft’s reported percentage changes."
+})
+```
+
+The caller owns client creation/cleanup and any future opt-in. The component does
+not load `.env`, read keys, create clients, or register endpoints. Passing `None`
+as the model returns `research_unavailable`. The question is trimmed and must be
+1–1,000 characters; extra request fields are rejected with Pydantic validation.
+
+Unlike Milestone B, this component first asks the model to interpret the natural
+language request. It does not fetch quotes until the model requests the sole tool,
+`get_quotes(symbols)`. Application code checks the exact function name and validates
+the complete argument object through `QuotesInput` before any service call. Unknown
+tools and invalid symbols, duplicates, extra fields, or invalid list sizes produce
+fixed safe tool errors, which the model may correct within the remaining budget.
+
+Tool results contain cumulative request evidence in first-requested symbol order,
+existing backend calculations, and candidate findings. Repeated symbols reuse the
+identical quote object, including its original `cache_hit` and timestamps. Expected
+failures are also memoized, so they are not retried during the request. Evidence IDs
+remain stable across tool calls, with no replacements or duplicates in the result.
+This memoization is separate from the existing provider cache and request budget.
+
+The model may request another tool invocation or finish with the existing
+`ModelReply` schema. Final findings must exactly match a subset of the latest
+tool-returned candidates, including ordered operands, comparison direction, and
+ranking/ties. Existing backend validation/rendering produces the numerical text.
+An answer without evidence, invented references, duplicate findings, arbitrary
+prose, or model-owned prices is rejected. Partial data and differing trading dates
+retain evidence and limitations but cannot produce an answered comparison.
+
+Supported research remains reported quotes, daily high-minus-low ranges, ordered
+percentage-point differences, and rankings of reported percentage changes.
+Common historical, momentum, volatility, forecast, valuation, and trading requests
+are rejected by a conservative scope guard. Other unsupported/ambiguous requests
+use model-selected unsupported/clarification statuses. This is not a general
+semantic proof that every possible question has been understood; the factual
+guarantee is limited to validated quote relationships and backend-rendered text.
+Fictional values remain labeled, and fetch time is not evidence of freshness.
+
+### Manual loop limits and results
+
+- At most three model calls and two tool invocations per request. Invalid and
+  unknown tool requests count. An oversized batch is rejected before executing
+  any of its calls; accepted calls are executed sequentially.
+- The third model call, or a call after both tool slots are used, requests final
+  structured JSON with no tools. Unexpected further tool requests are rejected.
+- A 30-second overall `asyncio.wait_for` deadline, with remaining time applied to
+  each model/tool/quote wait. SDK HTTP timeouts use milliseconds and are at most
+  20 seconds or the remaining time, whichever is smaller. No automatic retries,
+  automatic tool execution, or automatic continuation is enabled.
+- Conversation, budgets, cached outcomes, and evidence are request-local. Original
+  model content parts/signatures are retained internally; function results echo
+  their matching call IDs. No conversation, hidden reasoning, signatures, raw
+  provider errors, or credentials are included in the public result or logged by
+  the component. Tool text is data, not instructions.
+
+The result contains `question`, nullable `quotes`, `explanation`, `model_calls`,
+`tool_requests`, and safe `tool_outcomes` (tool name, validated symbols, outcome
+code). `tool_requests` counts all requests observed, including a rejected batch,
+so it can exceed two even though no more than two invocations execute. There is
+no HTTP status mapping for this internal component.
+
+Existing safe explanation codes are reused, with `tool_budget_exhausted` and
+`model_budget_exhausted` added. Deadline failures retain completed quote outcomes;
+missing outcomes become safe timeout errors without new provider calls. Shared
+quote fetches retain the existing cancellation policy and can finish in the
+service cache after a caller times out. There is no new process-wide admission
+control or daily spending cap; those are future endpoint integration decisions.
+
+Official references checked for the installed `google-genai==2.31.0`:
+
+- [Versioned manual function-calling examples](https://github.com/googleapis/python-genai/blob/v2.31.0/README.md#manually-declare-and-invoke-a-function-for-function-calling)
+- [Versioned function-call IDs, signatures, timeout and retry types](https://github.com/googleapis/python-genai/blob/v2.31.0/google/genai/types.py)
+- [Google function-calling guide](https://ai.google.dev/gemini-api/docs/function-calling)
+- [Thinking/signature guide](https://ai.google.dev/gemini-api/docs/thinking)
+
+The current web guides emphasize the Interactions API; this implementation follows
+the installed SDK's `generate_content` interface. Tool-enabled turns request final
+JSON in the instructions and validate it locally; the final-only turn also supplies
+the response schema. Live server acceptance and model behavior remain unverified.
+
+Tests exercise the actual SDK through mocked HTTP transport, including full
+function-call/function-result serialization, preserved parts/signatures, IDs,
+budgets, deadlines, safe failures, and grounded output. No real key is needed:
+
+```sh
+MARKET_DATA_PROVIDER=demo RESEARCH_ENABLED=false .venv/bin/python -m unittest discover -s tests -v
+```
