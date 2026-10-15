@@ -111,7 +111,7 @@ class ResearchAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.service.get_quote.await_args_list, [call('AAPL'), call('MSFT')])
         sent = self.bodies[1]['contents']
         self.assertEqual(sent[1], {'role': 'model', 'parts': parts})
-        self.assertEqual(sent[2]['role'], 'tool')
+        self.assertEqual(sent[2]['role'], 'user')
         function_result = sent[2]['parts'][0]['functionResponse']
         self.assertEqual(function_result['id'], 'correlation-17')
         self.assertEqual(function_result['name'], 'get_quotes')
@@ -385,3 +385,89 @@ class ResearchAgentTests(unittest.IsolatedAsyncioTestCase):
         first, second = [request.extensions['timeout']['read'] for request in self.requests]
         self.assertLessEqual(first, 0.2)
         self.assertLess(second, first - 0.02)
+
+    async def test_second_turn_outbound_content_matches_generate_content_contract(self):
+        def inspect_followup(body):
+            # Check the actual SDK wire representation, not a permissive mock's
+            # success alone. Content roles are user/model per the REST contract.
+            self.assertEqual([item['role'] for item in body['contents']], ['user', 'model', 'user'])
+            result_part = body['contents'][-1]['parts'][0]
+            self.assertEqual(set(result_part), {'functionResponse'})
+            result = result_part['functionResponse']
+            self.assertEqual(result['name'], 'get_quotes')
+            self.assertEqual(result['id'], 'call-1')
+            evidence = result['response']['result']
+            self.assertEqual(evidence['data_mode'], 'fictional')
+            self.assertEqual(evidence['calculations']['difference']['value'], '3.5')
+            self.assertIsInstance(evidence['evidence'][0]['quote']['fetched_at'], str)
+            self.assertEqual(body['tools'], self.bodies[0]['tools'])
+            self.assertEqual(body['toolConfig']['functionCallingConfig']['mode'], 'AUTO')
+            self.assertNotIn('responseMimeType', body['generationConfig'])
+            self.assertNotIn('responseJsonSchema', body['generationConfig'])
+            self.assertNotIn('responseSchema', body['generationConfig'])
+            return choose_difference(body)
+
+        self.script = [response([tool(['AAPL', 'MSFT'])]), inspect_followup]
+        result = await self.run_agent()
+        self.assertEqual(result.explanation.status, 'answered')
+        self.assertEqual(len(self.requests), 2)
+
+    async def test_second_turn_failure_diagnostics_are_safe(self):
+        cases = [
+            (httpx.Response(400, json={'error': {'code': 400, 'message': 'SECRET'}}),
+             'request_rejected', 'ClientError', 400, 'model_unavailable'),
+            (httpx.Response(503, json={'error': {'code': 503, 'message': 'SECRET'}}),
+             'provider_error', 'ServerError', 503, 'model_unavailable'),
+            (httpx.Response(429, json={'error': {'code': 429, 'message': 'SECRET'}}),
+             'quota', 'ClientError', 429, 'model_quota'),
+            (httpx.ConnectError('SECRET https://example.com?key=SECRET'),
+             'transport', 'ConnectError', None, 'model_unavailable'),
+            (httpx.ReadTimeout('SECRET'), 'timeout', 'ReadTimeout', None, 'research_timeout'),
+            (httpx.Response(200, text='SECRET not JSON'),
+             'response_json_decode', 'JSONDecodeError', None, 'model_unavailable'),
+        ]
+        for failure, category, exception, status, public_code in cases:
+            with self.subTest(category=category):
+                self.script = [response([tool(['AAPL', 'MSFT'])]), failure]
+                before = len(self.requests)
+                with self.assertLogs('app.gemini_client', level='WARNING') as logs:
+                    result = await self.run_agent()
+                self.assertEqual(len(self.requests) - before, 2)
+                self.assertEqual(result.model_calls, 2)
+                self.assertEqual(result.tool_requests, 1)
+                self.assertEqual(result.tool_outcomes[0].code, 'ok')
+                self.assertEqual(result.explanation.code, public_code)
+                self.assertEqual(len(result.quotes.evidence), 2)
+                self.assertEqual(len(logs.records), 1)
+                record = logs.records[0]
+                self.assertEqual(record.getMessage(),
+                                 f'Gemini agent failure model_call=2 exception={exception} '
+                                 f'category={category} status={status}')
+                self.assertIsNone(record.exc_info)
+                self.assertIsNone(record.stack_info)
+                self.assertNotIn('SECRET', str(logs.output) + result.model_dump_json())
+                self.assertNotIn(QUESTION, str(logs.output))
+                self.assertNotIn('FAKE_AGENT_KEY', str(logs.output))
+
+    async def test_second_turn_local_sdk_error_diagnostic(self):
+        original = self.model.client.aio.models.generate_content
+        calls = 0
+
+        async def fail_second(**kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise ValueError('SECRET request conversion detail')
+            return await original(**kwargs)
+
+        self.script = [response([tool(['AAPL', 'MSFT'])])]
+        with patch.object(self.model.client.aio.models, 'generate_content', side_effect=fail_second), \
+                self.assertLogs('app.gemini_client', level='WARNING') as logs:
+            result = await self.run_agent()
+        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(result.model_calls, 2)
+        self.assertEqual(result.explanation.code, 'model_unavailable')
+        self.assertEqual(logs.records[0].getMessage(),
+                         'Gemini agent failure model_call=2 exception=ValueError '
+                         'category=sdk_other status=None')
+        self.assertNotIn('SECRET', str(logs.output) + result.model_dump_json())

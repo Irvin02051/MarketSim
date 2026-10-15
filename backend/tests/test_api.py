@@ -1,14 +1,18 @@
+import asyncio
 import io
+import json
 import logging
 import unittest
 from unittest.mock import AsyncMock, patch
 
 import httpx
 from fastapi.testclient import TestClient
+from google.genai import types
 
 from app.gemini_client import GeminiClient
 from app.main import app
 from app.market_data import MarketData
+from app.research_explanation import ModelFailure
 
 
 class ApiTests(unittest.TestCase):
@@ -172,3 +176,140 @@ class ResearchApiTests(unittest.TestCase):
                 app.state.research.model.generate.assert_not_called()
             finally:
                 app.state.research.active.release()
+
+
+class AgentApiTests(unittest.TestCase):
+    question = 'Compare Apple and Microsoft’s reported percentage changes.'
+
+    def setUp(self):
+        self.environment = patch.dict('os.environ', {'MARKET_DATA_PROVIDER': 'demo'}, clear=True)
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+        for transport, method in [('AsyncHTTPTransport', 'handle_async_request'),
+                                  ('HTTPTransport', 'handle_request')]:
+            guard = patch(f'httpx.{transport}.{method}',
+                          side_effect=AssertionError('External network forbidden'))
+            mocked = guard.start()
+            self.addCleanup(guard.stop)
+            self.addCleanup(mocked.assert_not_called)
+
+    def test_configuration_rejected_without_agent_or_quote_calls(self):
+        for configuration in [
+            {'RESEARCH_ENABLED': 'false', 'GEMINI_API_KEY': 'FAKE_TEST_KEY'},
+            {'RESEARCH_ENABLED': 'true'},
+            {'RESEARCH_ENABLED': 'true', 'GEMINI_API_KEY': 'FAKE_TEST_KEY', 'GEMINI_MODEL': ''},
+        ]:
+            with patch.dict('os.environ', configuration), TestClient(app) as client, patch.object(
+                app.state.research_agent, 'run', new_callable=AsyncMock,
+            ) as run, patch.object(app.state.market_data, 'get_quote', new_callable=AsyncMock) as quotes:
+                response = client.post('/api/research/agent', json={'question': self.question})
+                self.assertEqual(response.status_code, 503)
+                self.assertEqual(response.json()['explanation']['code'], 'research_unavailable')
+                self.assertEqual(response.json()['model_calls'], 0)
+                run.assert_not_called()
+                quotes.assert_not_called()
+
+    def test_request_validation_precedes_agent(self):
+        with TestClient(app) as client, patch.object(
+            app.state.research_agent, 'run', new_callable=AsyncMock,
+        ) as run:
+            for body in [{}, {'question': None}, {'question': 1}, {'question': []},
+                         {'question': ''}, {'question': ' \n '}, {'question': 'x' * 1001},
+                         {'question': self.question, 'symbols': ['AAPL']},
+                         {'question': self.question, 'extra': True}]:
+                with self.subTest(body=body):
+                    self.assertEqual(client.post('/api/research/agent', json=body).status_code, 422)
+            self.assertEqual(client.post('/api/research/agent', content='{',
+                                         headers={'Content-Type': 'application/json'}).status_code, 422)
+            run.assert_not_called()
+
+    def test_success_uses_shared_client_and_serializes_agent_evidence(self):
+        model = AsyncMock(spec=GeminiClient)
+        model.agent_turn.side_effect = [
+            types.Content(role='model', parts=[types.Part.from_function_call(
+                name='get_quotes', args={'symbols': ['AAPL', 'MSFT']},
+            )]),
+            types.Content(role='model', parts=[types.Part.from_text(text=json.dumps({
+                'status': 'answered', 'findings': [{
+                    'kind': 'difference', 'evidence_ids': ['q1', 'q2'],
+                    'calculation_ref': 'calculations.difference', 'relation': 'higher',
+                }],
+            }))]),
+        ]
+        with patch('app.main.configured_client', return_value=model), TestClient(app) as client:
+            self.assertIs(app.state.research.model, app.state.research_agent.model)
+            response = client.post('/api/research/agent', json={'question': f'  {self.question}  '})
+            self.assertEqual(response.status_code, 200)
+            result = response.json()
+            self.assertEqual(result['question'], self.question)
+            self.assertEqual(result['explanation']['status'], 'answered')
+            self.assertEqual(result['quotes']['data_mode'], 'fictional')
+            self.assertIn('FICTIONAL', result['quotes']['label'])
+            self.assertEqual(result['quotes']['calculations']['difference']['value'], '3.5')
+            self.assertEqual((result['model_calls'], result['tool_requests']), (2, 1))
+            self.assertEqual(result['tool_outcomes'][0]['code'], 'ok')
+            self.assertFalse(app.state.research.active.locked())
+            schema = client.get('/openapi.json').json()['paths']['/api/research/agent']['post']
+            for status in ['200', '429', '503']:
+                self.assertEqual(schema['responses'][status]['content']['application/json']['schema'],
+                                 {'$ref': '#/components/schemas/AgentResult'})
+            self.assertIn('422', schema['responses'])
+        model.close.assert_awaited_once()
+
+    def test_safe_failure_and_timeout_release_slot(self):
+        model = AsyncMock(spec=GeminiClient)
+        with patch('app.main.configured_client', return_value=model), TestClient(app) as client:
+            for failure, code in [(RuntimeError('PRIVATE_PROVIDER_DETAIL'), 'research_failed'),
+                                  (ModelFailure('model_quota'), 'model_quota'),
+                                  (asyncio.TimeoutError('PRIVATE_PROVIDER_DETAIL'), 'research_timeout')]:
+                model.agent_turn.side_effect = failure
+                response = client.post('/api/research/agent', json={'question': self.question})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()['explanation']['code'], code)
+                self.assertNotIn('PRIVATE_PROVIDER_DETAIL', response.text)
+                self.assertFalse(app.state.research.active.locked())
+
+    def test_shared_admission_and_cancellation_in_both_directions(self):
+        model = AsyncMock(spec=GeminiClient)
+        with patch('app.main.configured_client', return_value=model), TestClient(app) as client:
+            async def exercise():
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                             base_url='http://test') as http:
+                    for active_path, method, rejected_path in [
+                        ('/api/research/agent', 'agent_turn', '/api/research'),
+                        ('/api/research', 'generate', '/api/research/agent'),
+                    ]:
+                        started = asyncio.Event()
+
+                        async def pending(*args, started=started, **kwargs):
+                            started.set()
+                            await asyncio.Event().wait()
+
+                        getattr(model, method).side_effect = pending
+                        bodies = {
+                            '/api/research/agent': {'question': self.question},
+                            '/api/research': {'question': 'Compare their reported percentage changes.',
+                                              'symbols': ['AAPL', 'MSFT']},
+                        }
+                        task = asyncio.create_task(http.post(active_path, json=bodies[active_path]))
+                        try:
+                            await asyncio.wait_for(started.wait(), 2)
+                            calls_before = (model.agent_turn.await_count, model.generate.await_count)
+                            response = await http.post(rejected_path, json=bodies[rejected_path])
+                            self.assertEqual(response.status_code, 429)
+                            self.assertEqual(response.json()['explanation']['code'], 'research_busy')
+                            self.assertIsNone(response.json()['quotes'])
+                            self.assertEqual((model.agent_turn.await_count, model.generate.await_count),
+                                             calls_before)
+                        finally:
+                            task.cancel()
+                            with self.assertRaises(asyncio.CancelledError):
+                                await task
+                        self.assertFalse(app.state.research.active.locked())
+                    # A real agent deadline also frees the shared slot.
+                    app.state.research_agent.deadline = 0.01
+                    response = await http.post('/api/research/agent', json={'question': self.question})
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(response.json()['explanation']['code'], 'research_timeout')
+                    self.assertFalse(app.state.research.active.locked())
+            client.portal.call(exercise)

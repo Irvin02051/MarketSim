@@ -218,6 +218,7 @@ class ResearchAgent:
             result.model_calls += 1
             content = await asyncio.wait_for(self.model.agent_turn(
                 state.conversation, timeout=remaining,
+                model_call=result.model_calls,
                 final=result.model_calls == MAX_MODEL_CALLS or result.tool_requests == MAX_TOOL_CALLS,
             ), remaining)
             requested = sum(part.function_call is not None for part in content.parts or [])
@@ -246,7 +247,8 @@ class ResearchAgent:
                 responses.append(types.Part(function_response=types.FunctionResponse(
                     id=call.id, name=call.name, response=payload,
                 )))
-            state.conversation.append(types.Content(role='tool', parts=responses))
+            # GenerateContent's Content contract permits only user/model roles.
+            state.conversation.append(types.Content(role='user', parts=responses))
         raise ModelFailure('model_budget_exhausted')
 
     async def _tool(self, state: _State, call: types.FunctionCall) -> dict:
