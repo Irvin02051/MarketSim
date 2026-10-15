@@ -1,11 +1,12 @@
 import io
 import logging
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 from fastapi.testclient import TestClient
 
+from app.gemini_client import GeminiClient
 from app.main import app
 from app.market_data import MarketData
 
@@ -76,3 +77,98 @@ class ApiTests(unittest.TestCase):
             self.assertNotIn(sentinel, output.getvalue())
         finally:
             root.removeHandler(handler)
+
+
+class ResearchApiTests(unittest.TestCase):
+    def setUp(self):
+        self.environment = patch.dict('os.environ', {'MARKET_DATA_PROVIDER': 'demo'}, clear=True)
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+        self.network = patch('httpx.AsyncHTTPTransport.handle_async_request',
+                             side_effect=AssertionError('External network forbidden'))
+        self.network.start()
+        self.addCleanup(self.network.stop)
+
+    def test_disabled_and_missing_key_leave_existing_routes_working(self):
+        for enabled in ['false', 'true']:
+            with patch.dict('os.environ', {'RESEARCH_ENABLED': enabled}), TestClient(app) as client:
+                response = client.post('/api/research', json={
+                    'question': 'Compare their reported percentage changes.',
+                    'symbols': ['AAPL', 'MSFT'],
+                })
+                self.assertEqual(response.status_code, 503)
+                self.assertEqual(response.json()['explanation']['code'], 'research_unavailable')
+                self.assertEqual(client.get('/health').status_code, 200)
+                self.assertEqual(client.get('/api/stocks/AAPL/quote').status_code, 200)
+                self.assertIn('/api/research', client.get('/openapi.json').json()['paths'])
+
+    def test_invalid_input_does_not_call_services(self):
+        with TestClient(app) as client, patch.object(
+            app.state.market_data, 'get_quote', new_callable=AsyncMock,
+        ) as quotes:
+            for body in [
+                {'question': ' ', 'symbols': ['AAPL']},
+                {'question': 'x', 'symbols': ['AAPL', 'TSLA']},
+                {'question': 'x', 'symbols': ['AAPL', 'aapl']},
+                {'question': 'x', 'symbols': ['AAPL'], 'tools': []},
+            ]:
+                self.assertEqual(client.post('/api/research', json=body).status_code, 422)
+            quotes.assert_not_called()
+
+    def test_sdk_end_to_end_success_quota_and_cleanup(self):
+        calls = []
+        clients = []
+        quota = False
+
+        async def handle(request):
+            calls.append(request)
+            if quota:
+                return httpx.Response(429, json={'error': {'code': 429, 'message': 'SECRET'}})
+            return httpx.Response(200, json={'candidates': [{
+                'finishReason': 'STOP', 'content': {'role': 'model', 'parts': [{'text':
+                    '{"status":"answered","findings":[{"kind":"difference",'
+                    '"evidence_ids":["q1","q2"],"calculation_ref":"calculations.difference",'
+                    '"relation":"higher"}]}',
+                }]},
+            }]})
+
+        def factory():
+            model = GeminiClient('FAKE_TEST_KEY',
+                                 http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)))
+            clients.append(model)
+            return model
+
+        with patch('app.main.configured_client', side_effect=factory), TestClient(app) as client:
+            body = {'question': '  Compare their reported percentage changes.  ',
+                    'symbols': ['aapl', 'MSFT']}
+            response = client.post('/api/research', json=body)
+            self.assertEqual(response.status_code, 200)
+            result = response.json()
+            self.assertEqual(result['question'], body['question'].strip())
+            self.assertEqual(result['quotes']['data_mode'], 'fictional')
+            self.assertEqual(result['quotes']['calculations']['difference']['value'], '3.5')
+            self.assertEqual(result['explanation']['status'], 'answered')
+            self.assertEqual(len(calls), 1)
+            quota = True
+            response = client.post('/api/research', json=body)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()['explanation']['code'], 'model_quota')
+            self.assertEqual(len(response.json()['quotes']['evidence']), 2)
+            self.assertNotIn('SECRET', response.text)
+            self.assertEqual(len(calls), 2)
+            self.assertFalse(app.state.research.active.locked())
+        self.assertTrue(clients[0].http_client.is_closed)
+
+    def test_busy_response_has_stable_status(self):
+        with TestClient(app) as client:
+            app.state.research.model = AsyncMock(spec=GeminiClient)
+            app.state.research.active.acquire()
+            try:
+                response = client.post('/api/research', json={
+                    'question': 'Compare their reported percentage changes.', 'symbols': ['AAPL'],
+                })
+                self.assertEqual(response.status_code, 429)
+                self.assertEqual(response.json()['explanation']['code'], 'research_busy')
+                app.state.research.model.generate.assert_not_called()
+            finally:
+                app.state.research.active.release()
