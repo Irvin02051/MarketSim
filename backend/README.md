@@ -95,8 +95,8 @@ Restart Vite after changing `.env.local`. Never place secrets in frontend
 See [frontend instructions](../frontend/README.md) for connection, unavailable,
 retry, keyboard, and mobile checks.
 
-CORS allows only `http://localhost:5173` and `http://127.0.0.1:5173`, with GET
-and credentials disabled. No custom request headers are needed. An unlisted
+CORS allows only `http://localhost:5173` and `http://127.0.0.1:5173`, with GET and POST
+allowed and credentials disabled. JSON research requests allow Content-Type. An unlisted
 origin receives no `Access-Control-Allow-Origin` header; CORS is browser
 access control, not authentication. The health response is unchanged.
 
@@ -182,8 +182,8 @@ startup tooling (python-dotenv is already a dependency):
 ```
 
 Existing process environment variables take precedence over `.env` values.
-Use one worker and loopback binding. There is no real authentication; CORS remains
-GET-only and is not an authorization boundary. No frontend integration is included.
+Use one worker and loopback binding. There is no real authentication; CORS allows local frontend GET/POST requests and is not an authorization boundary.
+The frontend research page uses the agent endpoint described below.
 Do not expose this endpoint publicly. This milestone was tested only with mocks.
 
 ### Limits and HTTP behavior
@@ -248,7 +248,7 @@ Keep a free-tier project unbilled; do not submit personal or confidential data.
 ## Internal research agent (Milestone C foundation)
 
 `app.research_agent.ResearchAgent` remains a callable component and is now
-exposed through `POST /api/research/agent`, without frontend integration. The existing
+exposed through `POST /api/research/agent`, with a frontend interface at `/research`. The existing
 `POST /api/research` retains its Milestone B behavior and question templates.
 No dependencies, configuration variables, or market-provider behavior change.
 
@@ -404,6 +404,6 @@ curl --fail-with-body -i http://127.0.0.1:8000/api/research/agent \
 
 This sends a real request to Gemini but uses fictional market quotes. It was not
 run automatically. Keep loopback binding and one worker: there is no authentication
-or daily spending cap. CORS remains GET-only; no frontend behavior changes.
+or daily spending cap. CORS allows GET/POST and Content-Type for the two explicit local frontend origins.
 Endpoint tests use mocks and require no key or `.env` loading. Live Gemini and
 market-provider behavior remain unverified.

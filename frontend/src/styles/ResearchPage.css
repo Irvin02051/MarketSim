@@ -1,0 +1,28 @@
+.research-page .dashboard-main { max-width: 980px; }
+.research-form, .research-results { padding: clamp(20px, 4vw, 32px); }
+.research-form label { display: block; font-weight: 650; margin-bottom: 12px; }
+.research-form textarea { width: 100%; resize: vertical; min-height: 120px; padding: 14px; font: inherit; color: inherit; line-height: 1.6; border: 1px solid #93aaa6; border-radius: 8px; background: #fbfdfc; }
+.research-form p, .research-meta { font-size: 13px; color: #526572; line-height: 1.7; }
+.research-actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 20px; }
+.research-actions button { min-height: 44px; padding: 12px 18px; border: 1px solid #b8daca; border-radius: 8px; background: #eaf5ef; color: #1b6148; font-weight: 600; }
+.research-actions button[type=submit] { background: #176b51; color: white; border-color: #176b51; }
+.research-actions button:disabled { opacity: .65; cursor: wait; }
+.research-actions button:hover:not(:disabled) { filter: brightness(.95); }
+.research-error { border-left: 4px solid #ac343c; padding: 14px; background: #fff3f3; color: #862b32; }
+.research-status { min-height: 24px; }
+.research-results { background: white; border: 1px solid #dde5e8; border-radius: 13px; line-height: 1.7; }
+.research-results h2 { font-size: 22px; line-height: 1.3; }
+.research-question { font-weight: 600; }
+.research-provenance, .research-fictional { padding: 14px; background: #fff3d4; color: #664713; border-radius: 7px; font-weight: 650; }
+.research-findings { padding-left: 24px; }
+.research-findings li { margin-block: 12px; }
+.research-quotes { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: 16px; }
+.research-quote { min-width: 0; padding: 20px; border: 1px solid #dce7e2; border-radius: 10px; background: #f7faf8; }
+.research-quote h3 { margin: 0; }
+.research-source { font-size: 13px; font-weight: 650; }
+.research-quote dl { margin-bottom: 0; }
+.research-quote dt { font-size: 12px; color: #526572; }
+.research-quote dd { margin: 0 0 12px; font-variant-numeric: tabular-nums; }
+.research-activity { border-top: 1px solid #dce7e2; margin-top: 24px; padding-top: 18px; font-size: 13px; }
+.research-activity summary { cursor: pointer; min-height: 44px; padding-block: 10px; font-weight: 650; }
+@media (max-width: 600px) { .research-actions button { width: 100%; } }
