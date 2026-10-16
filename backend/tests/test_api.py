@@ -385,6 +385,48 @@ class AgentApiTests(unittest.TestCase):
             self.assertIn('422', schema['responses'])
         model.close.assert_awaited_once()
 
+    def test_historical_response_is_additive_typed_and_independent_of_quotes(self):
+        model = AsyncMock(spec=GeminiClient)
+        question = 'Compare AAPL and MSFT price change from 2025-01-01 to 2025-03-31.'
+        model.agent_turn.side_effect = [
+            types.Content(role='model', parts=[types.Part.from_function_call(
+                name='get_historical_metrics', args={'symbols': ['AAPL', 'MSFT'],
+                                                   'start_date': '2025-01-01', 'end_date': '2025-03-31'},
+            )]),
+            types.Content(role='model', parts=[types.Part.from_text(text=json.dumps({
+                'status': 'answered', 'findings': [], 'historical_findings': [{
+                    'metric': 'price_change', 'evidence_ids': ['hm1', 'hm2'], 'relation': 'higher',
+                }],
+            }))]),
+        ]
+        with patch('app.main.configured_client', return_value=model), TestClient(app) as client, patch.object(
+            app.state.market_data, 'get_quote', new_callable=AsyncMock,
+        ) as quotes:
+            response = client.post('/api/research/agent', json={'question': question})
+            self.assertEqual(response.status_code, 200)
+            result = response.json()
+            self.assertEqual(result['status'], 'answered')
+            self.assertIsNone(result['quotes'])
+            self.assertEqual(result['explanation']['code'], 'historical_answer_available')
+            self.assertEqual(result['explanation']['findings'], [])
+            self.assertEqual(result['tool_outcomes'], [])
+            self.assertEqual(result['historical_tool_outcomes'][0]['tool'], 'get_historical_metrics')
+            self.assertEqual(result['historical_tool_outcomes'][0]['start_date'], '2025-01-01')
+            evidence = result['historical_evidence']
+            self.assertEqual([e['id'] for e in evidence], ['hm1', 'hm2'])
+            self.assertIsInstance(evidence[0]['price_change']['value'], str)
+            self.assertEqual(evidence[0]['provenance']['data_kind'], 'fictional')
+            self.assertEqual(evidence[0]['provenance']['adjustment_basis'], 'unknown')
+            self.assertEqual(result['historical_findings'][0]['evidence_ids'], ['hm1', 'hm2'])
+            self.assertNotIn('"bars"', response.text)
+            self.assertFalse(app.state.research.active.locked())
+            quotes.assert_not_called()
+            schemas = client.get('/openapi.json').json()['components']['schemas']
+            fields = schemas['AgentResult']['properties']
+            self.assertEqual(fields['historical_findings']['items'],
+                             {'$ref': '#/components/schemas/RenderedHistoricalFinding'})
+            self.assertTrue(fields['status']['readOnly'])
+
     def test_safe_failure_and_timeout_release_slot(self):
         model = AsyncMock(spec=GeminiClient)
         with patch('app.main.configured_client', return_value=model), TestClient(app) as client:

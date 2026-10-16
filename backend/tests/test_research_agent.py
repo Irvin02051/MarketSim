@@ -11,6 +11,8 @@ from pydantic import ValidationError
 from test_research import quote
 
 from app.gemini_client import GeminiClient
+from app.historical_data import get_history
+from app.historical_research import get_historical_metrics
 from app.market_data import MarketData, QuoteError
 from app.research_agent import ResearchAgent
 
@@ -37,6 +39,21 @@ def tool_payload(body):
 def choose_difference(body):
     findings = tool_payload(body)['candidate_findings']
     return final(findings=[next(item for item in findings if item['kind'] == 'difference')])
+
+
+def historical_tool(symbols=None, *, start='2025-01-01', end='2025-03-31', call_id='history-1'):
+    return tool(name='get_historical_metrics', call_id=call_id, args={
+        'symbols': symbols or ['AAPL', 'MSFT'], 'start_date': start, 'end_date': end,
+    })
+
+
+def historical_final(ids=None, *, metric='price_change', relation='higher', **extra):
+    return response([{'text': json.dumps({
+        'status': 'answered', 'findings': [], 'historical_findings': [{
+            'metric': metric, 'evidence_ids': ['hm1', 'hm2'] if ids is None else ids,
+            'relation': relation, **extra,
+        }],
+    })}])
 
 
 class ResearchAgentTests(unittest.IsolatedAsyncioTestCase):
@@ -98,7 +115,7 @@ class ResearchAgentTests(unittest.IsolatedAsyncioTestCase):
             self.service.get_quote.assert_not_called()  # Model chooses before retrieval.
             self.assertEqual(body['contents'][0]['parts'][0]['text'], QUESTION)
             declarations = body['tools'][0]['functionDeclarations']
-            self.assertEqual([item['name'] for item in declarations], ['get_quotes'])
+            self.assertEqual([item['name'] for item in declarations], ['get_quotes', 'get_historical_metrics'])
             self.assertFalse(declarations[0]['parameters_json_schema']['additionalProperties'])
             self.assertEqual(body['toolConfig']['functionCallingConfig']['mode'], 'AUTO')
             return response(parts)
@@ -277,7 +294,7 @@ class ResearchAgentTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_historical_forecasting_and_unsupported_stock_requests(self):
         for question in ['Compare historical momentum for Apple and Microsoft',
-                         'Predict Nvidia tomorrow', 'What is Apple volatility?']:
+                         'Predict Nvidia tomorrow']:
             result = await self.run_agent(question)
             self.assertEqual(result.explanation.status, 'unsupported')
             self.assertEqual(result.model_calls, 0)
@@ -285,6 +302,215 @@ class ResearchAgentTests(unittest.IsolatedAsyncioTestCase):
         result = await self.run_agent('Compare Tesla and Apple')
         self.assertEqual(result.explanation.status, 'unsupported')
         self.service.get_quote.assert_not_called()
+
+    async def test_historical_sdk_exchange_preserves_evidence_and_wire_contract(self):
+        question = 'How did Apple and Microsoft compare on price change from 2025-01-01 to 2025-03-31?'
+        signature = base64.b64encode(b'historical-signature').decode()
+        parts = [historical_tool(['aapl', 'MSFT']) | {'thoughtSignature': signature}]
+
+        def inspect(body):
+            self.assertEqual([item['role'] for item in body['contents']], ['user', 'model', 'user'])
+            self.assertEqual(body['contents'][1]['parts'], parts)
+            reply = body['contents'][-1]['parts'][0]['functionResponse']
+            self.assertEqual((reply['name'], reply['id']), ('get_historical_metrics', 'history-1'))
+            bundle = reply['response']['result']
+            self.assertEqual(bundle['request'], {'symbols': ['AAPL', 'MSFT'],
+                                               'start_date': '2025-01-01', 'end_date': '2025-03-31'})
+            self.assertEqual(bundle['data_mode'], 'fictional')
+            self.assertEqual([item['id'] for item in bundle['evidence']], ['hm1', 'hm2'])
+            self.assertIsInstance(bundle['evidence'][0]['price_change']['value'], str)
+            self.assertNotIn('"bars"', json.dumps(bundle))
+            self.assertEqual(body['tools'], self.bodies[0]['tools'])
+            declaration = body['tools'][0]['functionDeclarations'][1]
+            schema = declaration['parameters_json_schema']
+            self.assertEqual(set(schema['required']), {'symbols', 'start_date', 'end_date'})
+            self.assertFalse(schema['additionalProperties'])
+            self.assertEqual(schema['properties']['start_date']['format'], 'date')
+            self.assertNotIn('responseJsonSchema', body['generationConfig'])
+            return historical_final()
+
+        self.script = [response(parts), inspect]
+        result = await self.run_agent(question)
+        self.assertEqual(result.status, 'answered')
+        self.assertEqual((result.model_calls, result.tool_requests), (2, 1))
+        self.assertIsNone(result.quotes)
+        self.assertEqual(result.explanation.code, 'historical_answer_available')
+        self.assertEqual(result.explanation.status, 'clarification')
+        self.assertEqual(result.explanation.findings, [])
+        self.assertEqual(result.tool_outcomes, [])  # Legacy frontend accepts its existing vocabulary.
+        self.assertEqual(result.historical_tool_outcomes[0].code, 'ok')
+        statement = result.historical_findings[0].statement
+        self.assertIn('FICTIONAL', statement)
+        self.assertIn('2025-01-01 through 2025-03-31', statement)
+        self.assertIn('higher than', statement)
+        self.assertEqual(result.historical_findings[0].statement_origin, 'backend')
+        self.assertNotIn(signature, result.model_dump_json())
+        self.service.get_quote.assert_not_called()
+
+    async def test_historical_model_selects_symbol_dates_and_single_metric(self):
+        self.script = [response([historical_tool(['NVDA'], start='2024-01-01', end='2024-02-29')]),
+                       historical_final(['hm1'], metric='sma_20', relation='reported')]
+        result = await self.run_agent('Tell me Nvidia’s latest 20-observation mean in January–February 2024.')
+        self.assertEqual(result.status, 'answered')
+        evidence = result.historical_evidence[0]
+        self.assertEqual(evidence.provenance.symbol, 'NVDA')
+        self.assertEqual(evidence.provenance.requested_range.end, date(2024, 2, 29))
+        self.assertEqual(evidence.sma_20.observation_count, 20)
+        self.assertIn('NVDA', result.historical_findings[0].statement)
+
+    async def test_relative_periods_require_explicit_dates_without_calls(self):
+        for period in ['last month', 'this year', 'past 30 days', 'yesterday']:
+            result = await self.run_agent(f'Compare Apple and Microsoft volatility {period}.')
+            self.assertEqual(result.status, 'clarification')
+            self.assertIn('YYYY-MM-DD', result.explanation.message)
+            self.assertEqual((result.model_calls, result.tool_requests), (0, 0))
+        self.assertEqual(self.requests, [])
+        # Other ambiguity is still model-selected, without an exact template parser.
+        self.script = [final('clarification')]
+        self.assertEqual((await self.run_agent('What is Apple volatility?')).status, 'clarification')
+
+    async def test_invalid_historical_arguments_rejected_before_retrieval(self):
+        base = {'symbols': ['AAPL'], 'start_date': '2025-01-01', 'end_date': '2025-03-31'}
+        invalid = [base | change for change in [
+            {'symbols': []}, {'symbols': ['AAPL', 'aapl']}, {'symbols': ['AAPL', 'TSLA']},
+            {'symbols': ['AAPL', 'MSFT', 'NVDA', 'AAPL']}, {'extra': 'SECRET'},
+            {'start_date': 'last month'}, {'start_date': '2025-1-01'},
+            {'start_date': '2025-01-01T00:00:00Z'}, {'start_date': True},
+            {'start_date': '2025-02-30'}, {'end_date': '2024-01-01'}, {'end_date': '2027-01-01'},
+        ]]
+        invalid.append({'symbols': ['AAPL']})
+        with patch('app.research_agent.get_historical_metrics') as retrieve:
+            for args in invalid:
+                with self.subTest(args=args):
+                    self.script = [response([tool(name='get_historical_metrics', args=args)]), final('clarification')]
+                    result = await self.run_agent()
+                    self.assertEqual(result.historical_tool_outcomes[0].code, 'invalid_tool_arguments')
+                    self.assertEqual(result.historical_evidence, [])
+                    self.assertNotIn('SECRET', result.model_dump_json())
+            retrieve.assert_not_called()
+
+    async def test_historical_ids_survive_different_ranges_and_symbols(self):
+        self.script = [response([historical_tool()]), response([
+            historical_tool(['AAPL', 'NVDA'], start='2024-01-01', end='2024-03-31', call_id='history-2'),
+        ]), historical_final(['hm1', 'hm2'])]
+        result = await self.run_agent()
+        self.assertEqual(result.status, 'answered')
+        self.assertEqual([(e.id, e.provenance.symbol) for e in result.historical_evidence],
+                         [('hm1', 'AAPL'), ('hm2', 'MSFT'), ('hm3', 'AAPL'), ('hm4', 'NVDA')])
+        self.assertEqual(result.historical_evidence[0].provenance.requested_range.start, date(2025, 1, 1))
+        self.assertEqual(result.historical_evidence[2].provenance.requested_range.start, date(2024, 1, 1))
+        self.assertFalse(self.bodies[-1].get('tools'))
+        self.assertIn('historical_findings', self.bodies[-1]['generationConfig']['responseJsonSchema']['properties'])
+
+    async def test_reordered_normalized_history_reuses_evidence_and_fetches_once(self):
+        self.script = [response([historical_tool()]), response([
+            historical_tool(['msft', 'aapl'], call_id='history-2'),
+        ]), historical_final(['hm2', 'hm1'], relation='lower')]
+        with patch('app.historical_research.get_history', wraps=get_history) as retrieve:
+            result = await self.run_agent()
+        self.assertEqual(retrieve.call_count, 2)
+        self.assertEqual(result.status, 'answered')
+        first = tool_payload(self.bodies[1])['result']['evidence']
+        second = tool_payload(self.bodies[2])['result']['evidence']
+        self.assertEqual(first, list(reversed(second)))
+        self.assertEqual(len(result.historical_evidence), 2)
+
+    async def test_overlapping_history_requests_only_collect_new_symbols(self):
+        self.script = [response([historical_tool(['AAPL'])]), response([
+            historical_tool(['aapl', 'NVDA'], call_id='history-2'),
+        ]), historical_final(['hm1'], relation='reported')]
+        with patch('app.historical_research.get_history', wraps=get_history) as retrieve:
+            result = await self.run_agent()
+        self.assertEqual(retrieve.call_count, 2)
+        self.assertEqual([(e.id, e.provenance.symbol) for e in result.historical_evidence],
+                         [('hm1', 'AAPL'), ('hm2', 'NVDA')])
+
+    async def test_quote_and_history_tools_share_budget_and_keep_separate_evidence(self):
+        def mixed_final(body):
+            quote_payload = body['contents'][-1]['parts'][0]['functionResponse']['response']
+            selection = next(f for f in quote_payload['candidate_findings'] if f['kind'] == 'difference')
+            return response([{'text': json.dumps({
+                'status': 'answered', 'findings': [selection], 'historical_findings': [{
+                    'metric': 'price_change', 'evidence_ids': ['hm1', 'hm2'], 'relation': 'higher',
+                }],
+            })}])
+
+        self.script = [response([tool(['AAPL', 'MSFT']), historical_tool()]), mixed_final]
+        result = await self.run_agent()
+        self.assertEqual(result.status, 'answered')
+        self.assertEqual(result.explanation.status, 'answered')
+        self.assertEqual((result.model_calls, result.tool_requests), (2, 2))
+        self.assertEqual([e.id for e in result.quotes.evidence], ['q1', 'q2'])
+        self.assertEqual([e.id for e in result.historical_evidence], ['hm1', 'hm2'])
+        self.assertFalse(self.bodies[-1].get('tools'))
+        self.script = [response([tool(['AAPL']), historical_tool(), historical_tool(call_id='extra')])]
+        with patch('app.research_agent.get_historical_metrics') as retrieve:
+            result = await self.run_agent()
+            retrieve.assert_not_called()
+        self.assertEqual(result.explanation.code, 'tool_budget_exhausted')
+        self.script = [response([historical_tool()]), response([
+            tool(['AAPL']), historical_tool(call_id='extra'),
+        ])]
+        result = await self.run_agent()
+        self.assertEqual(result.explanation.code, 'tool_budget_exhausted')
+        self.assertEqual(len(result.historical_evidence), 2)
+
+    async def test_invalid_historical_findings_never_publish_statements(self):
+        for invalid in [
+            historical_final(['hm1', 'q1']), historical_final(metric='momentum'),
+            historical_final(relation='lower'), historical_final(value='100.0'),
+            historical_final(statement='Buy Apple'), historical_final(['hm1'], relation='higher'),
+        ]:
+            self.script = [response([historical_tool()]), invalid]
+            result = await self.run_agent()
+            self.assertEqual(result.explanation.code, 'invalid_model_output')
+            self.assertEqual(result.historical_findings, [])
+            self.assertEqual(len(result.historical_evidence), 2)
+
+    async def test_historical_empty_and_partial_coverage_never_shift_dates(self):
+        for start, end in [('2026-01-01', '2026-03-31'), ('2025-01-04', '2025-01-05'),
+                           ('2025-01-01', '2025-01-01')]:
+            self.script = [response([historical_tool(start=start, end=end)]), historical_final()]
+            result = await self.run_agent()
+            self.assertEqual(result.explanation.code, 'invalid_model_output')
+            self.assertIsNone(result.historical_evidence[0].price_change.value)
+            self.assertEqual(str(result.historical_evidence[0].provenance.requested_range.start), start)
+        self.script = [response([historical_tool(start='2023-12-29', end='2024-02-01')]), historical_final()]
+        result = await self.run_agent()
+        self.assertEqual(result.status, 'answered')
+        self.assertIn('coverage is incomplete', result.historical_findings[0].statement)
+        self.assertEqual(result.historical_evidence[0].provenance.coverage, 'partial_overlap')
+
+    async def test_historical_failures_are_safe_and_deadline_preserves_completed_evidence(self):
+        self.script = [response([historical_tool()])]
+        with patch('app.research_agent.get_historical_metrics', side_effect=RuntimeError('SECRET')):
+            result = await self.run_agent()
+        self.assertEqual(result.explanation.code, 'research_failed')
+        self.assertNotIn('SECRET', result.model_dump_json())
+
+        async def slow(*args, **kwargs):
+            await asyncio.Event().wait()
+
+        self.agent.deadline = 0.1
+        self.script = [response([historical_tool()]), slow]
+        result = await self.run_agent()
+        self.assertEqual(result.explanation.code, 'research_timeout')
+        self.assertEqual(len(result.historical_evidence), 2)
+        self.assertEqual(result.historical_findings, [])
+        self.script = [response([historical_tool()])]
+        with patch('app.research_agent.asyncio.to_thread', side_effect=slow):
+            result = await self.run_agent()
+        self.assertEqual(result.explanation.code, 'research_timeout')
+        self.assertEqual(result.model_calls, 1)
+        self.assertEqual(result.historical_evidence, [])
+
+    async def test_historical_evidence_is_request_local(self):
+        for _ in range(2):
+            self.script = [response([historical_tool(['AAPL'])]), historical_final(['hm1'], relation='reported')]
+            with patch('app.research_agent.get_historical_metrics', wraps=get_historical_metrics) as collect:
+                result = await self.run_agent()
+            collect.assert_called_once()
+            self.assertEqual([e.id for e in result.historical_evidence], ['hm1'])
 
     async def test_final_without_evidence_or_with_invented_claims_is_rejected(self):
         finding = {'kind': 'difference', 'evidence_ids': ['q1', 'q2'],
