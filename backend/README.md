@@ -268,34 +268,37 @@ as the model returns `research_unavailable`. The question is trimmed and must be
 1–1,000 characters; extra request fields are rejected with Pydantic validation.
 
 Unlike Milestone B, this component first asks the model to interpret the natural
-language request. It does not fetch quotes until the model requests the sole tool,
-`get_quotes(symbols)`. Application code checks the exact function name and validates
-the complete argument object through `QuotesInput` before any service call. Unknown
+language request. It retrieves evidence only after the model requests `get_quotes(symbols)`
+or `get_historical_metrics(symbols, start_date, end_date)`. Application code checks
+the exact function name and validates the complete argument object through
+`QuotesInput` or `HistoricalResearchInput` before any service call. Unknown
 tools and invalid symbols, duplicates, extra fields, or invalid list sizes produce
 fixed safe tool errors, which the model may correct within the remaining budget.
 
-Tool results contain cumulative request evidence in first-requested symbol order,
+Quote tool results contain cumulative request evidence in first-requested symbol order,
 existing backend calculations, and candidate findings. Repeated symbols reuse the
 identical quote object, including its original `cache_hit` and timestamps. Expected
 failures are also memoized, so they are not retried during the request. Evidence IDs
 remain stable across tool calls, with no replacements or duplicates in the result.
 This memoization is separate from the existing provider cache and request budget.
 
-The model may request another tool invocation or finish with the existing
-`ModelReply` schema. Final findings must exactly match a subset of the latest
+The model may request another tool invocation or finish with `AgentReply`, which
+extends `ModelReply` with a separate `historical_findings` array. Quote findings
+must exactly match a subset of the latest
 tool-returned candidates, including ordered operands, comparison direction, and
 ranking/ties. Existing backend validation/rendering produces the numerical text.
 An answer without evidence, invented references, duplicate findings, arbitrary
-prose, or model-owned prices is rejected. Partial data and differing trading dates
+prose, or model-owned prices is rejected. Partial quote data and differing trading dates
 retain evidence and limitations but cannot produce an answered comparison.
 
-Supported research remains reported quotes, daily high-minus-low ranges, ordered
-percentage-point differences, and rankings of reported percentage changes.
-Common historical, momentum, volatility, forecast, valuation, and trading requests
+Supported quote research remains reported quotes, daily high-minus-low ranges,
+ordered percentage-point differences, and rankings of reported percentage changes.
+Historical research now supports the four descriptive metrics below, including
+single-metric reports and pairwise comparisons. Momentum, forecast, valuation, and trading requests
 are rejected by a conservative scope guard. Other unsupported/ambiguous requests
 use model-selected unsupported/clarification statuses. This is not a general
 semantic proof that every possible question has been understood; the factual
-guarantee is limited to validated quote relationships and backend-rendered text.
+guarantee is limited to validated evidence relationships and backend-rendered text.
 Fictional values remain labeled, and fetch time is not evidence of freshness.
 
 ### Manual loop limits and results
@@ -316,8 +319,9 @@ Fictional values remain labeled, and fetch time is not evidence of freshness.
   the component. Tool text is data, not instructions.
 
 The result contains `question`, nullable `quotes`, `explanation`, `model_calls`,
-`tool_requests`, and safe `tool_outcomes` (tool name, validated symbols, outcome
-code). `tool_requests` counts all requests observed, including a rejected batch,
+`tool_requests`, and safe `tool_outcomes` (quote/unknown tool name, validated symbols,
+outcome code). Additive historical fields and overall `status` are documented below.
+`tool_requests` counts all requests observed, including a rejected batch,
 so it can exceed two even though no more than two invocations execute. There is
 no HTTP status mapping inside the component; the route applies the contract below.
 
@@ -360,14 +364,14 @@ MARKET_DATA_PROVIDER=demo RESEARCH_ENABLED=false .venv/bin/python -m unittest di
 The question must be a string, trimmed to 1–1,000 characters. Missing, blank,
 non-string, oversized questions and extra fields (including `symbols`) receive
 HTTP 422 with FastAPI validation details, before any agent or quote call.
-The model selects supported symbols through the existing validated `get_quotes`
-tool; the HTTP route does not implement another loop.
+The model selects supported symbols through validated quote/historical tools;
+the HTTP route does not implement another loop.
 
 | HTTP | Response |
 | --- | --- |
 | 503 | `AgentResult` with `research_unavailable` when research is disabled or configuration is missing/invalid; no agent/model calls |
 | 429 | `AgentResult` with `research_busy` when either research endpoint is active; no queued work |
-| 200 | Completed `AgentResult`; inspect `explanation.status` and `explanation.code`, including safe failure/timeout outcomes |
+| 200 | Completed `AgentResult`; inspect overall `status`, quote `explanation`, and `historical_findings`, including safe failure/timeout outcomes |
 | 422 | FastAPI request-validation error |
 
 The typed `AgentResult` schema is published in `/openapi.json`. It contains the
@@ -411,7 +415,7 @@ market-provider behavior remain unverified.
 ## Internal fictional historical data
 
 `app.historical_data.get_history()` is a synchronous service, exposed through the
-history endpoint below, with no agent tool, provider adapter, environment
+history endpoint below, with no direct agent-tool registration, provider adapter, environment
 configuration, or cache of its own.
 It accepts `HistoricalInput` or a dictionary with `symbol`, `start_date`,
 `end_date`, and optional `interval="daily"`. Python callers supply `date` objects;
@@ -493,8 +497,8 @@ curl -i 'http://127.0.0.1:8000/api/stocks/AAPL/history?start_date=2025-01-03&end
 `app.historical_metrics.calculate_historical_metrics(history)` is a pure function
 accepting an already validated `HistoricalResult`. It revalidates that model, uses
 only its supplied observations, and does not retrieve data, mutate input, fill
-dates, read configuration, or call a provider. It is not connected to an endpoint,
-frontend, or agent tool. No dependency was added.
+dates, read configuration, or call a provider. The agent uses it through the compact
+historical-research wrapper; it has no separate endpoint or frontend. No dependency was added.
 
 The typed `HistoricalMetrics` result marks `origin="backend"` and retains the
 complete source result under `history`, including symbol, currency, fictional
@@ -561,8 +565,8 @@ available. This is a hand-authored example, not actual market performance.
 ## Internal historical-metrics research tool
 
 `app.historical_research.get_historical_metrics(request)` is a synchronous internal
-wrapper, not an HTTP endpoint or registered Gemini tool. Existing agent behavior
-is unchanged. It accepts `HistoricalResearchInput` or a dictionary with exactly
+wrapper, with no separate HTTP endpoint. The agent now registers it as a controlled
+Gemini tool, as described below. It accepts `HistoricalResearchInput` or a dictionary with exactly
 `symbols` (one to three unique AAPL/MSFT/NVDA symbols), `start_date`, and `end_date`.
 Python callers supply `date` objects; `HistoricalResearchInput.model_validate_json`
 accepts ISO dates. Symbol normalization and duplicate validation reuse `QuotesInput`;
@@ -599,8 +603,119 @@ arithmetic errors, or other programming errors. Such errors propagate, and a
 mismatched returned symbol/range is rejected. A future live adapter must define
 its expected domain exceptions and safe per-symbol mappings before it is added.
 
-There are no rankings, signals, recommendations, or cross-stock calculations.
-Later comparisons must check matching **actual metric windows, units, adjustment
-basis, and availability**, not merely matching requested dates. Unknown adjustment
-basis remains a limitation; this milestone does not establish suitability of real
-provider data or authorize Gemini integration.
+The wrapper itself performs no rankings, signals, recommendations, or cross-stock
+calculations. The agent validates pairwise selections separately, checking matching
+**actual metric windows, units, adjustment basis, and availability**, not merely
+matching requested dates. Unknown adjustment basis remains a limitation; these
+descriptive fixture comparisons do not establish suitability of real-provider data.
+
+## Historical metrics in the bounded research agent
+
+`POST /api/research/agent` still accepts only `question`. Natural-language requests
+can now select `get_historical_metrics` with this exact tool argument shape:
+
+```json
+{"symbols":["AAPL","MSFT"],"start_date":"2025-01-01","end_date":"2025-03-31"}
+```
+
+Symbols reuse the existing allowlist/normalization and must be unique after
+normalization (one to three). Dates must be explicit `YYYY-MM-DD`, ordered, and
+within the existing two-calendar-year request bound. Extra fields are rejected.
+The complete request is validated before retrieval. The wrapper owns all history
+retrieval and calculations; the loop does not duplicate either. These histories
+are always fictional, independently of the configured quote provider.
+
+The instructions state the exact fictional coverage, **2024-01-01 through
+2025-12-31**, and require clarification for missing or ambiguous dates. Common
+relative periods such as “last month” are also caught before model calls. Requested
+dates are never moved into coverage: outside/short intervals retain empty or
+unavailable metrics, and partial coverage retains its warnings. The question is
+not restricted to exact templates. Unrecognized semantic ambiguity still depends
+on the model following instructions; mocked tests do not prove live interpretation.
+
+Both tools share **three model calls, two tool invocations, and 30 seconds total**.
+Validation failures/unknown tools consume budget. Execution remains sequential;
+the correct `user` function-response role, IDs, original model parts/signatures,
+no automatic retries, and shared HTTP concurrency lock are unchanged. Local
+historical calculations run in a worker thread so the existing deadline and
+cancellation remain responsive. A cancelled calculation may finish locally but
+cannot publish evidence or trigger another model call.
+
+The loop memoizes each normalized `(symbol, start_date, end_date)` for the request.
+Repeated or reordered requests reuse exactly the same evidence, IDs, and fetch
+timestamps; overlaps collect only new symbols. New symbols/ranges append evidence
+with unique `hm1`, `hm2`, … IDs across the entire run. Earlier evidence is never
+overwritten. Quote IDs stay in the `q` namespace. Historical fixtures and standalone
+demo quotes remain separate datasets, never one continuous price series. Nothing
+is persisted between agent requests.
+
+Model historical selections contain only:
+
+```json
+{"metric":"price_change","evidence_ids":["hm1","hm2"],"relation":"higher"}
+```
+
+Allowed metric keys are `price_change`, `sma_20`, `sma_50`, and
+`adjacent_return_volatility_20`. A single ID requires `reported`; a pair requires
+`higher`, `lower`, or `equal`, describing the first value relative to the second.
+At most four total quote/historical findings are accepted. Unknown IDs, duplicate
+findings/operands, unavailable metrics, model-supplied numbers/prose, and unsupported
+relations are rejected as `invalid_model_output`; retained evidence remains available.
+
+`historical_findings.py` validates availability and actual metric windows, units,
+currency, observation/required counts, adjustment basis, source, data kind, fixture
+range, interval, and observation calendar (plus return counts for volatility).
+Matching requested dates is insufficient. Compatible actual windows may support a
+comparison even when the requested ranges differ. Direction uses the canonical
+serialized Decimal values: equal six-decimal evidence values require `equal`.
+Backend-rendered statements include the actual dates, observation count, unit,
+fictional context, unknown adjustment basis, and incomplete-coverage warnings.
+Lower volatility describes lower measured return variability, not overall safety.
+Nominal SMA levels do not establish better performance; price change is not
+dividend-inclusive total return. No forecasts, advice, or historical rankings exist.
+
+### Additive API fields and current UI compatibility
+
+The existing quote fields and `/api/research` contract are unchanged. `AgentResult`
+adds these typed fields, also published in OpenAPI:
+
+- `status`: overall `answered`, `clarification`, `unsupported`, or `unavailable`.
+- `historical_evidence`: cumulative compact backend metric records, preserving
+  Decimal strings, actual windows/counts, requested/returned ranges, source,
+  fictional labels, fetch timestamps, unknown adjustment basis, and limitations.
+  No raw OHLCV bars are sent.
+- `historical_findings`: validated selections plus `statement` and
+  `statement_origin="backend"`.
+- `historical_tool_outcomes`: validated symbols/dates and safe outcome codes.
+  Invalid arguments omit unvalidated fields; empty results are `unavailable`,
+  partial coverage is `partial`, and ordinary collection is `ok`. Short history
+  may still be `ok` while individual metrics explicitly remain unavailable.
+
+The current frontend parser allows additive fields but only understands quote
+findings and quote tool names. Historical activity therefore lives in its own
+array. A historical-only success has overall `status="answered"`, its historical
+findings, and a legacy quote `explanation` with `status="clarification"`, empty
+findings, and code `historical_answer_available`. That is a compatibility notice,
+not a claim that the historical answer is unavailable. The current UI displays
+the notice under its existing “Clarification needed” heading, without historical
+tool activity; **historical evidence/findings/tool rendering is a later milestone**.
+Mixed results retain ordinary answered quote findings plus separate historical
+findings. Consumers of historical answers must use overall `status` and the new
+fields, not only the legacy quote explanation.
+
+HTTP statuses remain 422 for invalid input, 503 for missing/disabled configuration,
+429 for shared concurrency rejection, and 200 for completed safe agent outcomes.
+Errors, refusals, and deadlines publish no final historical findings. No raw SDK
+errors, prompts, hidden reasoning, or credentials are exposed.
+
+For a later user-run **live Gemini / fictional data** check (not an automated test):
+
+```sh
+curl --fail-with-body -i http://127.0.0.1:8000/api/research/agent \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"Compare Apple and Microsoft price change from 2025-01-01 to 2025-03-31 using fictional historical data."}'
+```
+
+Mocked tests cover the actual SDK wire exchange, preserved signatures/correlation,
+selection validation, memoization and IDs, shared budgets/deadlines, API serialization,
+and quote compatibility. No live model/provider calls are part of validation.

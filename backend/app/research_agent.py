@@ -3,12 +3,31 @@
 import asyncio
 import re
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Literal
 
 from google.genai import types
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    computed_field,
+    field_validator,
+)
 
 from app.gemini_client import GeminiClient
+from app.historical_findings import (
+    AgentReply,
+    RenderedHistoricalFinding,
+    render_historical_findings,
+)
+from app.historical_research import (
+    HistoricalMetricEvidence,
+    HistoricalResearchInput,
+    HistoricalResearchResult,
+    get_historical_metrics,
+)
 from app.market_data import MarketData, Quote, QuoteError
 from app.research import QuotesInput, QuotesResult, get_quotes
 from app.research_explanation import (
@@ -44,6 +63,12 @@ class ToolOutcome(BaseModel):
                   'research_timeout']
 
 
+class HistoricalToolOutcome(ToolOutcome):
+    tool: Literal['get_historical_metrics'] = 'get_historical_metrics'
+    start_date: date | None = None
+    end_date: date | None = None
+
+
 class AgentResult(BaseModel):
     question: str
     quotes: QuotesResult | None = None
@@ -51,14 +76,29 @@ class AgentResult(BaseModel):
     model_calls: int = 0
     tool_requests: int = 0
     tool_outcomes: list[ToolOutcome] = Field(default_factory=list)
+    historical_evidence: list[HistoricalMetricEvidence] = Field(default_factory=list)
+    historical_findings: list[RenderedHistoricalFinding] = Field(default_factory=list)
+    historical_tool_outcomes: list[HistoricalToolOutcome] = Field(default_factory=list)
+
+    @computed_field
+    @property
+    def status(self) -> Literal['answered', 'unsupported', 'clarification', 'unavailable']:
+        # The existing frontend's explanation projection is quote-only.
+        return 'answered' if self.historical_findings else self.explanation.status
 
 
 def agent_outcome(code: str, status='unavailable') -> Explanation:
     messages = {
         'tool_budget_exhausted': 'The requested tool batch exceeds the remaining tool budget.',
         'model_budget_exhausted': 'The model-call budget was exhausted before a final answer.',
-        'clarify_question': 'Ask about reported quotes, daily ranges, or percentage changes '
-                            'for Apple, Microsoft, or Nvidia.',
+        'clarify_question': 'Specify Apple, Microsoft, or Nvidia and the metric. For history, '
+                            'provide explicit start and end dates (YYYY-MM-DD); fictional '
+                            'fixtures cover 2024-01-01 through 2025-12-31.',
+        'unsupported_question': 'This request is outside supported quote and descriptive '
+                                'historical-metric research.',
+        'historical_answer_available': 'Historical research completed using fictional data. '
+                                       'Findings and tool activity are available in the API response; '
+                                       'this page currently displays quote results only.',
     }
     if code in messages:
         return Explanation(status=status, code=code, message=messages[code])
@@ -111,6 +151,7 @@ class _State:
     quotes: _RequestQuotes
     conversation: list[types.Content] = field(default_factory=list)
     call_ids: set[str] = field(default_factory=set)
+    history: dict[tuple[str, date, date], HistoricalMetricEvidence] = field(default_factory=dict)
 
 
 def candidates(quotes: QuotesResult | None) -> list[RenderedFinding]:
@@ -124,14 +165,7 @@ def candidates(quotes: QuotesResult | None) -> list[RenderedFinding]:
     return result
 
 
-def final_explanation(content: types.Content, quotes: QuotesResult | None) -> Explanation:
-    text = ''.join(part.text or '' for part in content.parts or [] if not part.thought)
-    if len(text) > 16_000:
-        raise ModelFailure('invalid_model_output')
-    try:
-        reply = ModelReply.model_validate_json(text)
-    except ValidationError:
-        raise ModelFailure('invalid_model_output') from None
+def final_explanation(reply: ModelReply, quotes: QuotesResult | None) -> Explanation:
     if reply.status != 'answered':
         if reply.findings:
             raise ModelFailure('invalid_model_output')
@@ -156,6 +190,30 @@ def final_explanation(content: types.Content, quotes: QuotesResult | None) -> Ex
     # Reuse exact relationship validation and backend rendering; accept a relevant
     # subset of the latest tool-returned candidates, never arbitrary model prose.
     return validate_reply(reply, selected)
+
+
+def finish(content: types.Content, result: AgentResult):
+    text = ''.join(part.text or '' for part in content.parts or [] if not part.thought)
+    if len(text) > 16_000:
+        raise ModelFailure('invalid_model_output')
+    try:
+        reply = AgentReply.model_validate_json(text)
+    except ValidationError:
+        raise ModelFailure('invalid_model_output') from None
+    if len(reply.findings) + len(reply.historical_findings) > 4:
+        raise ModelFailure('invalid_model_output')
+    if reply.status != 'answered' and reply.historical_findings:
+        raise ModelFailure('invalid_model_output')
+    # Validate everything before publishing any final findings.
+    historical = render_historical_findings(reply.historical_findings, result.historical_evidence)
+    quote_reply = ModelReply(status=reply.status, findings=reply.findings)
+    if historical and not reply.findings:
+        legacy = agent_outcome('historical_answer_available', 'clarification')
+    else:
+        legacy = final_explanation(quote_reply, result.quotes)
+        if historical and legacy.status != 'answered':
+            raise ModelFailure('invalid_model_output')
+    result.explanation, result.historical_findings = legacy, historical
 
 
 def function_calls(content: types.Content) -> list[types.FunctionCall]:
@@ -188,9 +246,16 @@ class ResearchAgent:
             return result
         # This is a conservative scope guard, not an exact-question parser.
         # The model handles other ambiguity/unsupported stocks through its final status.
-        if re.search(r'\b(histor\w*|momentum|volatil\w*|forecast\w*|predict\w*|'
+        if re.search(r'\b(momentum|forecast\w*|predict\w*|'
                      r'tomorrow|future|valuation|buy|sell)\b', request.question, re.IGNORECASE):
             result.explanation = agent_outcome('unsupported_question', 'unsupported')
+            return result
+        # Never reinterpret relative periods as old fixture dates. Other natural-
+        # language ambiguities are handled by the model's clarification status.
+        if re.search(r'\b(?:(?:last|this|previous|past)\s+(?:\d+\s+)?'
+                     r'(?:days?|weeks?|months?|years?|quarters?)|yesterday|ytd)\b',
+                     request.question, re.IGNORECASE):
+            result.explanation = agent_outcome('clarify_question', 'clarification')
             return result
         state = _State(result, _RequestQuotes(service, asyncio.get_running_loop().time() + self.deadline))
         state.conversation.append(types.Content(role='user', parts=[
@@ -232,7 +297,7 @@ class ResearchAgent:
             # part boundaries must survive the next generate_content request.
             state.conversation.append(content)
             if not calls:
-                result.explanation = final_explanation(content, result.quotes)
+                finish(content, result)
                 return
             ids = [call.id for call in calls if call.id is not None]
             if len(ids) != len(set(ids)) or any(call_id in state.call_ids for call_id in ids):
@@ -252,9 +317,12 @@ class ResearchAgent:
         raise ModelFailure('model_budget_exhausted')
 
     async def _tool(self, state: _State, call: types.FunctionCall) -> dict:
+        if call.name == 'get_historical_metrics':
+            return await self._historical_tool(state, call)
         if call.name != 'get_quotes':
             state.result.tool_outcomes.append(ToolOutcome(tool='unknown', code='unknown_tool'))
-            return {'error': {'code': 'unknown_tool', 'message': 'Only get_quotes is allowed.'}}
+            return {'error': {'code': 'unknown_tool',
+                              'message': 'Only get_quotes and get_historical_metrics are allowed.'}}
         try:
             request = QuotesInput.model_validate(call.args)
         except ValidationError:
@@ -271,3 +339,45 @@ class ResearchAgent:
             'candidate_findings': [item.model_dump(include=set(Finding.model_fields))
                                    for item in candidates(quotes)],
         }
+
+    async def _historical_tool(self, state: _State, call: types.FunctionCall) -> dict:
+        try:
+            args = dict(call.args) if isinstance(call.args, dict) else {}
+            for name in ('start_date', 'end_date'):
+                value = args.get(name)
+                if not isinstance(value, str) or re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}', value) is None:
+                    raise ValueError('Explicit ISO date required.')
+                args[name] = date.fromisoformat(value)
+            request = HistoricalResearchInput.model_validate(args)
+        except (ValueError, TypeError):
+            state.result.historical_tool_outcomes.append(HistoricalToolOutcome(code='invalid_tool_arguments'))
+            return {'error': {'code': 'invalid_tool_arguments', 'message':
+                             'Use only symbols (1–3 unique AAPL, MSFT, NVDA), start_date and end_date '
+                             '(YYYY-MM-DD), ordered and at most two calendar years.'}}
+        outcome = HistoricalToolOutcome(symbols=request.symbols, start_date=request.start_date,
+                                        end_date=request.end_date, code='research_timeout')
+        state.result.historical_tool_outcomes.append(outcome)
+        missing = [symbol for symbol in request.symbols
+                   if (symbol, request.start_date, request.end_date) not in state.history]
+        if missing:
+            # The synchronous local calculation runs outside the event loop so
+            # the existing total deadline/cancellation remains responsive. A
+            # cancelled worker can finish locally, but never changes agent state.
+            try:
+                collected = await asyncio.to_thread(get_historical_metrics, HistoricalResearchInput(
+                    symbols=missing, start_date=request.start_date, end_date=request.end_date,
+                ))
+            except Exception:
+                outcome.code = 'unavailable'
+                raise
+            for item in collected.evidence:
+                item = item.model_copy(update={'id': f'hm{len(state.history) + 1}'})
+                state.history[(item.provenance.symbol, request.start_date, request.end_date)] = item
+                state.result.historical_evidence.append(item)
+        evidence = tuple(state.history[(symbol, request.start_date, request.end_date)]
+                         for symbol in request.symbols)
+        outcome.code = ('unavailable' if all(item.provenance.status == 'empty' for item in evidence)
+                        else 'partial' if any(item.provenance.coverage != 'within_fixture'
+                                              or item.provenance.status == 'empty' for item in evidence)
+                        else 'ok')
+        return {'result': HistoricalResearchResult(request=request, evidence=evidence).model_dump(mode='json')}
