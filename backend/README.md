@@ -407,3 +407,42 @@ run automatically. Keep loopback binding and one worker: there is no authenticat
 or daily spending cap. CORS allows GET/POST and Content-Type for the two explicit local frontend origins.
 Endpoint tests use mocks and require no key or `.env` loading. Live Gemini and
 market-provider behavior remain unverified.
+
+## Internal fictional historical data
+
+`app.historical_data.get_history()` is a synchronous, internal service with no
+HTTP endpoint, agent tool, provider adapter, environment configuration, or cache.
+It accepts `HistoricalInput` or a dictionary with `symbol`, `start_date`,
+`end_date`, and optional `interval="daily"`. Python callers supply `date` objects;
+`HistoricalInput.model_validate_json()` accepts ISO date strings. Symbols reuse
+the quote service's normalization and AAPL/MSFT/NVDA allowlist. Extra fields,
+reversed ranges, and intervals spanning two years or more from the start's
+anniversary are rejected: the inclusive end must precede the two-year anniversary
+(February 29 anniversaries clamp to February 28). For example, January 1, 2024
+through December 31, 2025 is allowed.
+
+All three symbols have exactly 523 **fictional synthetic weekday observations**
+from **2024-01-01 through 2025-12-31**, inclusive. These are not actual trading
+dates or a real exchange schedule: weekdays include holidays. No exchange
+metadata or exchange-calendar completeness is claimed. Prices are self-authored
+integer-cent formulas with fixed symbol bases, a small index trend and periodic
+offsets. Volume is a synthetic integer except every seventeenth observation,
+where it is deliberately missing (`null`). Generation does not depend on today's
+date or randomness. These fixtures are separate from and do not reconcile with
+the standalone demo quotes. They cannot establish real market performance.
+
+The typed result retains the requested range and reports the actual returned
+range (null when empty), USD currency, timezone-aware fetch time, `source="demo"`,
+`data_kind="fictional"`, an explicit fictional label, and
+`adjustment_basis="unknown"`. Corporate actions are not modeled. Coverage is
+`within_fixture`, `partial_overlap`, or `outside_fixture`, describing date-bound
+overlap rather than completeness. Bars are ordered, unique, finite positive OHLC
+values with consistent high/low bounds and optional strict nonnegative integer
+volume. Invalid bars are rejected, not repaired.
+
+Filtering is inclusive. Weekends and dates outside the fixed coverage produce no
+observations; they are never forward-filled. A weekend-only or wholly outside
+request returns `status="empty"`, no bars, and no returned range. Partial overlap
+retains only available bars. The fetch timestamp describes local generation,
+not market-data freshness. No indicators, returns, or adjustment assumptions are
+introduced by this service.
