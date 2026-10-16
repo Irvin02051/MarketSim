@@ -25,4 +25,15 @@
 .research-quote dd { margin: 0 0 12px; font-variant-numeric: tabular-nums; }
 .research-activity { border-top: 1px solid #dce7e2; margin-top: 24px; padding-top: 18px; font-size: 13px; }
 .research-activity summary { cursor: pointer; min-height: 44px; padding-block: 10px; font-weight: 650; }
+.research-results { min-width: 0; overflow-wrap: anywhere; }
+.research-history { border-top: 1px solid #dce7e2; margin-top: 28px; padding-top: 16px; }
+.research-historical-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 16px; }
+.research-historical-card { scroll-margin-top: 24px; }
+.research-historical-card ul { padding-left: 20px; }
+.research-metric { border-top: 1px solid #dce7e2; margin-top: 18px; padding-top: 12px; }
+.research-metric h4 { margin: 0 0 8px; }
+.research-metric p { margin-block: 6px; }
+.research-metric-value { overflow-wrap: anywhere; font-variant-numeric: tabular-nums; font-weight: 650; }
+.research-findings a { color: #145640; text-underline-offset: 3px; }
+.research-page :is(a, button, textarea, summary, article):focus-visible { outline: 3px solid #176b51; outline-offset: 4px; }
 @media (max-width: 600px) { .research-actions button { width: 100%; } }
