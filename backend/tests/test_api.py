@@ -3,6 +3,7 @@ import io
 import json
 import logging
 import unittest
+from datetime import date, datetime
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -10,6 +11,7 @@ from fastapi.testclient import TestClient
 from google.genai import types
 
 from app.gemini_client import GeminiClient
+from app.historical_data import get_history
 from app.main import app
 from app.market_data import MarketData
 from app.research_explanation import ModelFailure
@@ -99,6 +101,115 @@ class ApiTests(unittest.TestCase):
             self.assertNotIn(sentinel, output.getvalue())
         finally:
             root.removeHandler(handler)
+
+
+class HistoryApiTests(unittest.TestCase):
+    def setUp(self):
+        environment = patch.dict('os.environ', {
+            'MARKET_DATA_PROVIDER': 'alpha_vantage', 'RESEARCH_ENABLED': 'false',
+        }, clear=True)
+        environment.start()
+        self.addCleanup(environment.stop)
+        for transport, method in [('AsyncHTTPTransport', 'handle_async_request'),
+                                  ('HTTPTransport', 'handle_request')]:
+            guard = patch(f'httpx.{transport}.{method}',
+                          side_effect=AssertionError('External network forbidden'))
+            mocked = guard.start()
+            self.addCleanup(guard.stop)
+            self.addCleanup(mocked.assert_not_called)
+        self.client = TestClient(app)
+        self.client.__enter__()
+        self.addCleanup(self.client.__exit__, None, None, None)
+
+    def test_filtered_response_preserves_service_contract(self):
+        with patch('app.main.get_history', wraps=get_history) as history, patch.object(
+            app.state.market_data, 'get_quote', new_callable=AsyncMock,
+        ) as quotes:
+            response = self.client.get('/api/stocks/aapl/history', params={
+                'start_date': '2024-01-01', 'end_date': '2024-01-03',
+            })
+            self.assertEqual(response.status_code, 200)
+            history.assert_called_once()
+            validated = history.call_args.args[0]
+            self.assertEqual(validated.symbol, 'AAPL')
+            self.assertEqual(validated.start_date, date(2024, 1, 1))
+            expected = get_history(validated).model_dump(mode='json')
+            actual = response.json()
+            self.assertIsNotNone(datetime.fromisoformat(actual.pop('fetched_at')).utcoffset())
+            expected.pop('fetched_at')
+            self.assertEqual(actual, expected)
+            self.assertEqual([bar['date'] for bar in actual['bars']],
+                             ['2024-01-01', '2024-01-02', '2024-01-03'])
+            self.assertIsNone(actual['bars'][0]['volume'])
+            self.assertEqual(actual['source'], 'demo')
+            self.assertEqual(actual['adjustment_basis'], 'unknown')
+            self.assertIn('FICTIONAL', actual['label'])
+            self.assertIsNone(app.state.research.model)
+            self.assertEqual(app.state.market_data.provider, 'alpha_vantage')
+            quotes.assert_not_called()
+        for symbol in ['msft', 'nvda']:
+            response = self.client.get(f'/api/stocks/{symbol}/history', params={
+                'start_date': '2025-01-01', 'end_date': '2025-01-01',
+            })
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()['symbol'], symbol.upper())
+
+    def test_invalid_queries_do_not_retrieve_history(self):
+        valid = {'start_date': '2025-01-01', 'end_date': '2025-01-03'}
+        queries = [{}, {'start_date': valid['start_date']}, {'end_date': valid['end_date']},
+                   {**valid, 'end_date': '2024-12-31'},
+                   {**valid, 'end_date': '2027-01-01'},
+                   {**valid, 'interval': 'daily'}, {**valid, 'unexpected': 'PRIVATE_SENTINEL'},
+                   [('start_date', valid['start_date']), ('start_date', valid['start_date']),
+                    ('end_date', valid['end_date'])]]
+        for name in valid:
+            for value in ['', '2025-1-01', '20250101', '2025-02-29', '2025-13-01',
+                          '2025-01-01T00:00:00Z', '1735689600', ' 2025-01-01', '0000-01-01']:
+                queries.append({**valid, name: value})
+        with patch('app.main.get_history') as history:
+            for query in queries:
+                with self.subTest(query=query):
+                    response = self.client.get('/api/stocks/AAPL/history', params=query)
+                    self.assertEqual(response.status_code, 422)
+                    self.assertIn('detail', response.json())
+                    self.assertNotIn('PRIVATE_SENTINEL', response.text)
+            for symbol in ['TSLA', 'A1', 'PRIVATE_SENTINEL']:
+                response = self.client.get(f'/api/stocks/{symbol}/history', params=valid)
+                self.assertEqual(response.status_code, 422)
+                self.assertNotIn('PRIVATE_SENTINEL', response.text)
+            history.assert_not_called()
+
+    def test_empty_and_partial_results_are_successful(self):
+        for start, end, coverage, dates in [
+            ('2025-01-04', '2025-01-05', 'within_fixture', []),
+            ('2026-01-01', '2026-01-03', 'outside_fixture', []),
+            ('2023-12-29', '2024-01-02', 'partial_overlap', ['2024-01-01', '2024-01-02']),
+        ]:
+            with self.subTest(start=start):
+                response = self.client.get('/api/stocks/AAPL/history', params={
+                    'start_date': start, 'end_date': end,
+                })
+                self.assertEqual(response.status_code, 200)
+                result = response.json()
+                self.assertEqual(result['requested_range'], {'start': start, 'end': end})
+                self.assertEqual(result['coverage'], coverage)
+                self.assertEqual(result['status'], 'ok' if dates else 'empty')
+                self.assertEqual([bar['date'] for bar in result['bars']], dates)
+                self.assertEqual(result['returned_range'],
+                                 {'start': dates[0], 'end': dates[-1]} if dates else None)
+                self.assertEqual(result['data_kind'], 'fictional')
+                self.assertTrue(result['limitations'])
+
+    def test_openapi_documents_required_dates_and_typed_result(self):
+        route = self.client.get('/openapi.json').json()['paths']['/api/stocks/{symbol}/history']['get']
+        parameters = {item['name']: item for item in route['parameters']}
+        for name in ['start_date', 'end_date']:
+            self.assertTrue(parameters[name]['required'])
+            self.assertEqual(parameters[name]['in'], 'query')
+            self.assertIn('pattern', parameters[name]['schema'])
+        self.assertEqual(route['responses']['200']['content']['application/json']['schema'],
+                         {'$ref': '#/components/schemas/HistoricalResult'})
+        self.assertIn('422', route['responses'])
 
 
 class ResearchApiTests(unittest.TestCase):

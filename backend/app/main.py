@@ -1,12 +1,16 @@
 import logging
 from contextlib import asynccontextmanager
+from datetime import date
+from typing import Annotated
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
 from app.gemini_client import configured_client
+from app.historical_data import HistoricalInput, HistoricalResult, get_history
 from app.market_data import MarketData, Quote, QuoteError
 from app.research_agent import AgentInput, AgentResult, ResearchAgent
 from app.research_explanation import ResearchExplanation, ResearchInput, ResearchResult
@@ -57,6 +61,31 @@ async def get_stock_quote(symbol: str, request: Request) -> Quote:
         return await request.app.state.market_data.get_quote(symbol)
     except QuoteError as error:
         raise HTTPException(status_code=error.status, detail=error.detail) from None
+
+
+@app.get('/api/stocks/{symbol}/history', response_model=HistoricalResult)
+def get_stock_history(
+    symbol: str, request: Request,
+    start_date: Annotated[str, Query(pattern=r'^[0-9]{4}-[0-9]{2}-[0-9]{2}$', max_length=10)],
+    end_date: Annotated[str, Query(pattern=r'^[0-9]{4}-[0-9]{2}-[0-9]{2}$', max_length=10)],
+) -> HistoricalResult:
+    """Fictional daily history, independent of quote-provider and research configuration."""
+    if set(request.query_params) != {'start_date', 'end_date'} or any(
+        len(request.query_params.getlist(name)) != 1 for name in ('start_date', 'end_date')
+    ):
+        raise HTTPException(status_code=422, detail='Supply only start_date and end_date, once each.')
+    try:
+        start, end = date.fromisoformat(start_date), date.fromisoformat(end_date)
+    except ValueError:
+        raise HTTPException(status_code=422, detail='Dates must be valid YYYY-MM-DD dates.') from None
+    try:
+        validated = HistoricalInput(symbol=symbol, start_date=start, end_date=end)
+    except ValidationError:
+        raise HTTPException(
+            status_code=422,
+            detail='Use AAPL, MSFT, or NVDA and an ordered date range of at most two calendar years.',
+        ) from None
+    return get_history(validated)
 
 
 @app.post('/api/research', response_model=ResearchResult, responses={
