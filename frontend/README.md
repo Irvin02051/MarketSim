@@ -1,7 +1,7 @@
 # MarketSim frontend
 
-React dashboard with static demo data, an API health indicator, and a research interface.
-Authentication and trading remain demos. No new dependencies are needed.
+React dashboard with static demo data, an API health indicator, a research interface,
+and fictional stock-history charts. Authentication and trading remain demos.
 
 ## Run both servers (separate terminals)
 
@@ -122,3 +122,70 @@ localhost/127.0.0.1 frontend origins on port 5173, without credentials.
    Gemini with fictional quote evidence; review the outcome and tool activity.
    No live request was executed for this milestone. Keep the server on loopback;
    there is no real authentication or daily spending cap.
+
+## Fictional stock-history charts
+
+Open `/stocks/AAPL`, `/stocks/MSFT`, or `/stocks/NVDA`, or follow a symbol link in
+the dashboard's sample watchlist. Its sample prices remain separate from history.
+The chart uses the existing `VITE_API_BASE_URL` and GET history endpoint, with no
+API keys or model requests. Run the backend with research disabled and demo data
+as described above; history itself is always fictional regardless of quote-provider
+configuration.
+
+Recharts 3.10.1 and react-is 19.3.0 were added, matching installed React 19.3.0.
+The [official installation guide](https://recharts.github.io/en-US/guide/installation/)
+recommends npm; the [official README](https://github.com/recharts/recharts#installation)
+requires react-is to match React. Recharts' published peer dependencies support
+React 19. No existing dependency versions were upgraded.
+
+`src/lib/history.ts` centralizes the fixed fixture bounds, 2024-01-01 through
+2025-12-31. A test checks the anchor against the backend contract. All date-only
+values use UTC. Ranges end at **December 31, 2025**, never today:
+
+| Range | Inclusive start | Inclusive end |
+| --- | --- | --- |
+| 1W | 2025-12-25 | 2025-12-31 |
+| 1M (default) | 2025-12-01 | 2025-12-31 |
+| 3M | 2025-10-01 | 2025-12-31 |
+| 1Y | 2025-01-01 | 2025-12-31 |
+
+1W covers seven calendar dates. Other ranges subtract one/three/twelve calendar
+months, clamp to a valid day in the destination month, then add one day for the
+inclusive start. These are not fixed 30/90/365-day windows. No intraday range is
+offered. The numeric time axis preserves elapsed-time spacing; straight lines
+connect observations without smoothing or inventing measured intermediate prices.
+Empty results show a message; a single observation shows a dot. The expandable
+HTML table is an alternative to the chart. Closing prices are USD, adjustment is
+unknown, and backend limitations and coverage warnings remain visible.
+
+The client validates consumed metadata, date ordering, uniqueness, bounds, and
+finite positive closing prices. It rejects malformed data rather than sorting,
+deduplicating, or filling gaps. Each response must match the requested symbol and
+range. Symbol/range changes unmount the previous result immediately and abort its
+request; cleanup also prevents obsolete completions from updating the page.
+Requests time out after ten seconds. Retry is manual; there is no polling or
+automatic retry loop. React StrictMode can start and cancel an extra mount request
+in development.
+
+### History browser checks
+
+1. Start the local demo backend with research disabled. Open `/dashboard` and
+   follow each symbol link; verify the prominent fictional banner and 1M default.
+2. Switch symbols and all four ranges, including rapid changes under network
+   throttling. Confirm the requested/returned dates, spacing, tooltips, selected
+   buttons, and absence of the previous stock's chart during loading.
+3. Check desktop and 320px mobile widths for clipped prices or horizontal overflow.
+   Tab through navigation, selector, range buttons, chart and table summary; verify
+   visible focus, keyboard chart exploration and status announcements. Expand the
+   data table and compare date/close values with the tooltip.
+4. Visit `/stocks/TSLA`: no history request should be sent. Stop the local backend
+   to check the network error and manual retry. Use browser response mocks for
+   empty/one-point/partial results, malformed data, HTTP errors and delayed requests
+   exceeding ten seconds. Preserve matching requested-range metadata in mocks.
+5. The fixed UI ranges lie inside coverage, so empty and partial states normally
+   require mocks. Browser automation was unavailable during this milestone;
+   rendering, mobile, keyboard, and screen-reader checks still require manual review.
+
+History helper tests run with `npm test` alongside the research tests and need no
+server or credentials. The production build was run with a temporary configuration
+outside the repository setting `envDir: false`, so no actual `.env` files were read.

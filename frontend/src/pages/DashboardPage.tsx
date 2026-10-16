@@ -73,7 +73,7 @@ export default function DashboardPage() {
                   <div className="dashboard-stock-identity">
                     <span className="dashboard-stock-monogram" aria-hidden="true">{stock.symbol[0]}</span>
                     <div>
-                      <h3>{stock.symbol}</h3>
+                      <h3><Link to={`/stocks/${stock.symbol}`} aria-label={`${stock.symbol} fictional price history`}>{stock.symbol}</Link></h3>
                       <p>{stock.company}</p>
                     </div>
                   </div>
