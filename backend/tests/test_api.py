@@ -39,9 +39,27 @@ class ApiTests(unittest.TestCase):
         response = self.client.options('/api/stocks/AAPL/quote', headers={
             'Origin': 'http://localhost:5173', 'Access-Control-Request-Method': 'GET',
         })
-        self.assertEqual(response.headers['access-control-allow-methods'], 'GET')
+        self.assertEqual(response.headers['access-control-allow-methods'], 'GET, POST')
         self.assertEqual(self.client.get('/docs').status_code, 200)
         self.assertIn('/api/stocks/{symbol}/quote', self.client.get('/openapi.json').json()['paths'])
+
+    def test_research_preflight_keeps_explicit_origins_and_headers(self):
+        for origin in ['http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:5174']:
+            response = self.client.options('/api/research/agent', headers={
+                'Origin': origin, 'Access-Control-Request-Method': 'POST',
+                'Access-Control-Request-Headers': 'content-type',
+            })
+            allowed = not origin.endswith('5174')
+            self.assertEqual(response.status_code, 200 if allowed else 400)
+            self.assertEqual(response.headers.get('access-control-allow-origin'), origin if allowed else None)
+            self.assertNotIn('access-control-allow-credentials', response.headers)
+            self.assertIn('content-type', response.headers['access-control-allow-headers'].lower())
+        for method, header in [('DELETE', 'content-type'), ('POST', 'authorization')]:
+            response = self.client.options('/api/research/agent', headers={
+                'Origin': 'http://localhost:5173', 'Access-Control-Request-Method': method,
+                'Access-Control-Request-Headers': header,
+            })
+            self.assertEqual(response.status_code, 400)
 
     def test_demo_route_and_validation(self):
         response = self.client.get('/api/stocks/aapl/quote')

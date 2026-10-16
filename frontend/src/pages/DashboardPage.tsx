@@ -34,6 +34,7 @@ export default function DashboardPage() {
             <span>MarketSim<span className="dashboard-brand-dot">.</span></span>
           </Link>
           <nav className="dashboard-navigation" aria-label="Dashboard navigation">
+            <Link className="dashboard-back-link" to="/research">Stock research</Link>
             <span className="dashboard-demo-badge">Demo mode</span>
             <Link className="dashboard-back-link" to="/login">Back to login <span aria-hidden="true">↗</span></Link>
           </nav>
