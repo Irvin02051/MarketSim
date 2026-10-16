@@ -410,8 +410,9 @@ market-provider behavior remain unverified.
 
 ## Internal fictional historical data
 
-`app.historical_data.get_history()` is a synchronous, internal service with no
-HTTP endpoint, agent tool, provider adapter, environment configuration, or cache.
+`app.historical_data.get_history()` is a synchronous service, exposed through the
+history endpoint below, with no agent tool, provider adapter, environment
+configuration, or cache of its own.
 It accepts `HistoricalInput` or a dictionary with `symbol`, `start_date`,
 `end_date`, and optional `interval="daily"`. Python callers supply `date` objects;
 `HistoricalInput.model_validate_json()` accepts ISO date strings. Symbols reuse
@@ -446,3 +447,43 @@ request returns `status="empty"`, no bars, and no returned range. Partial overla
 retains only available bars. The fetch timestamp describes local generation,
 not market-data freshness. No indicators, returns, or adjustment assumptions are
 introduced by this service.
+
+### Fictional history HTTP endpoint
+
+`GET /api/stocks/{symbol}/history?start_date=2025-01-01&end_date=2025-12-31`
+calls the existing historical service directly. Both query dates are required,
+must be real dates in exact `YYYY-MM-DD` format, and are inclusive. Supported
+symbols are AAPL, MSFT, and NVDA, case-insensitively. Only daily history is
+supported; there is no interval parameter. Unknown or repeated query parameters
+are rejected. The historical service owns range validation, including its
+two-calendar-year bound described above.
+
+HTTP 200 returns the existing `HistoricalResult`, including fictional/demo labels,
+unknown adjustment basis, requested/returned/fixture ranges, coverage, limitations,
+timezone-aware fetch time, and ordered OHLCV bars with nullable volume. Empty and
+partial results also return 200. HTTP 422 rejects missing or malformed dates,
+invalid ranges, unsupported symbols, and unknown/repeated query parameters using
+a `detail` response. Framework validation errors contain a detail list; calendar,
+symbol/range, and query-parameter checks use fixed safe detail strings. This
+history input-validation contract does not change the quote endpoint's 400/404
+symbol errors.
+
+History is **always fictional demo data**, even when `MARKET_DATA_PROVIDER` selects
+a live quote provider. It requires no credentials and works with research disabled.
+No quote-provider or model requests are made by this route. The frontend and agent
+tools do not consume history yet.
+
+For a local check, stop any old backend and run from `backend/` without loading
+an environment file:
+
+```sh
+MARKET_DATA_PROVIDER=demo RESEARCH_ENABLED=false .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+Successful short range, empty weekend, and invalid reversed range respectively:
+
+```sh
+curl -i 'http://127.0.0.1:8000/api/stocks/aapl/history?start_date=2025-01-01&end_date=2025-01-03'
+curl -i 'http://127.0.0.1:8000/api/stocks/AAPL/history?start_date=2025-01-04&end_date=2025-01-05'
+curl -i 'http://127.0.0.1:8000/api/stocks/AAPL/history?start_date=2025-01-03&end_date=2025-01-01'
+```
