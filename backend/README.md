@@ -487,3 +487,73 @@ curl -i 'http://127.0.0.1:8000/api/stocks/aapl/history?start_date=2025-01-01&end
 curl -i 'http://127.0.0.1:8000/api/stocks/AAPL/history?start_date=2025-01-04&end_date=2025-01-05'
 curl -i 'http://127.0.0.1:8000/api/stocks/AAPL/history?start_date=2025-01-03&end_date=2025-01-01'
 ```
+
+## Internal descriptive historical metrics
+
+`app.historical_metrics.calculate_historical_metrics(history)` is a pure function
+accepting an already validated `HistoricalResult`. It revalidates that model, uses
+only its supplied observations, and does not retrieve data, mutate input, fill
+dates, read configuration, or call a provider. It is not connected to an endpoint,
+frontend, or agent tool. No dependency was added.
+
+The typed `HistoricalMetrics` result marks `origin="backend"` and retains the
+complete source result under `history`, including symbol, currency, fictional
+label, adjustment basis, requested/returned/fixture ranges, coverage, fetch time,
+limitations and bars. Calculated fields are separate from those source fields:
+
+| Metric | Definition | Required closes | Unit |
+| --- | --- | --- | --- |
+| `price_change` | `(last close / first close - 1) * 100`, across all supplied observations | 2 | percent |
+| `sma_20` | Arithmetic mean of latest 20 closes | 20 | USD |
+| `sma_50` | Arithmetic mean of latest 50 closes | 50 | USD |
+| `adjacent_return_volatility_20` | Latest 20 simple returns from 21 closes; sample standard deviation multiplied by 100 | 21 | percent |
+
+For volatility each return is `current close / previous close - 1`. Subtract the
+mean return, square the differences, sum, divide by **19**, and take the square
+root before multiplying by 100. This is adjacent-observation return volatility,
+**not annualized** volatility. Calendar gaps remain gaps, not zero returns.
+Observations are not described as trading days for these synthetic fixtures.
+
+Each metric has `status`, `value`, `unit`, `window` (actual first/last observation
+dates), `observation_count`, `required_observations`, and `reason`. Insufficient
+history produces `status="unavailable"`, null value/window, and an explicit
+reason; its count reports available observations. Available metrics report their
+actual window count and no reason. `volatility_return_count` is 20 when computed,
+otherwise 0. A sufficient constant-price series correctly has available zero
+volatility, distinct from unavailable volatility.
+
+Calculations convert closes using `Decimal(str(close))` inside a fresh local
+context with **680 significant digits** and half-even rounding. The accepted
+positive finite binary64 prices include `5e-324` and `1.7976931348623157e308`.
+Their decimal-string ratio is below `3.6e631`; multiplying by 100 gives at most
+634 integer digits. The budget is **634 + 6 fractional digits + 40 guard digits**.
+Squaring returns increases their exponent; it does not require doubling the
+significant-digit budget for the final square-root output. Decimal's exponent
+range already accommodates these values, so this is not an overflow workaround.
+
+The previous 1400-digit budget was unnecessarily conservative for the demonstrated
+cases. At 28 or 50 digits, an extreme price change fails final `quantize()` with
+`InvalidOperation`. Even small magnitudes can need substantial precision: the
+mean of one `0.00001` close and nineteen `5e-324` closes is just above `0.0000005`.
+At 50 digits the tiny contribution disappears and rounds incorrectly to zero;
+680 digits retains it and returns `"0.000001"`. Tests check an exact integer
+extreme-price-change oracle and compare extreme volatility outputs with a
+2800-digit reference. The guard budget is conservative, not a proof of minimal
+precision or exhaustive correctly rounded results at every possible boundary.
+Intermediate returns are not quantized; only final values are rounded to **six
+decimal places**, half-even, with negative zero normalized to zero. Decimal
+values serialize as strings, such as `"25.000000"`. Outputs must be finite; the
+caller’s precision, rounding mode and traps do not change results. Syntax and
+APIs remain compatible with Python 3.10.
+
+These are descriptive calculations on fictional data, not forecasts, signals or
+recommendations. Unknown adjustment basis and unmodeled corporate actions remain
+explicit limitations. Price change is **not dividend-inclusive total return**;
+future real-provider data needs adjustment checks before use. Partial coverage
+retains its source metadata and adds a warning that calculations use only supplied
+observations, with actual metric windows rather than the entire requested range.
+
+Illustrative fictional example: 50 weekday observations with every close at
+USD 100 yield price change `"0.000000"` percent, SMA20/SMA50 `"100.000000"` USD,
+and adjacent-observation return volatility `"0.000000"` percent. All four are
+available. This is a hand-authored example, not actual market performance.
