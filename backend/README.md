@@ -557,3 +557,50 @@ Illustrative fictional example: 50 weekday observations with every close at
 USD 100 yield price change `"0.000000"` percent, SMA20/SMA50 `"100.000000"` USD,
 and adjacent-observation return volatility `"0.000000"` percent. All four are
 available. This is a hand-authored example, not actual market performance.
+
+## Internal historical-metrics research tool
+
+`app.historical_research.get_historical_metrics(request)` is a synchronous internal
+wrapper, not an HTTP endpoint or registered Gemini tool. Existing agent behavior
+is unchanged. It accepts `HistoricalResearchInput` or a dictionary with exactly
+`symbols` (one to three unique AAPL/MSFT/NVDA symbols), `start_date`, and `end_date`.
+Python callers supply `date` objects; `HistoricalResearchInput.model_validate_json`
+accepts ISO dates. Symbol normalization and duplicate validation reuse `QuotesInput`;
+each symbol's dates reuse `HistoricalInput`, including its two-calendar-year bound.
+The entire request is validated before any history retrieval. Invalid input raises
+`ValidationError`; no symbols are silently dropped.
+
+For every symbol, the wrapper calls the existing `get_history` once and passes
+that validated result to `calculate_historical_metrics`. It retains the full
+metrics result locally while projecting a typed compact response. No calculations
+are repeated, Decimal values are not converted to floats, and raw OHLCV arrays
+are absent from the response.
+
+The result includes the normalized `request`, an `evidence` tuple, `errors`, and
+explicit fictional labels and limitations. Evidence IDs `hm1`, `hm2`, `hm3` follow
+normalized request order and are stable within that invocation; they are separate
+from quote IDs `q1`, etc. IDs restart for each invocation and are not global IDs.
+Each evidence item includes:
+
+- `origin="backend"` and compact `provenance`: symbol, USD currency, demo source,
+  fictional label, unknown adjustment basis, daily interval, synthetic weekday
+  calendar, requested/returned/fixture ranges, coverage/status, and fetch timestamp.
+- The four unchanged `HistoricalMetric` records: Decimal value (JSON string),
+  unit, availability/reason, actual window, and observation counts.
+- `volatility_return_count` and all source/metric limitations, including partial
+  coverage warnings and the distinction from actual market performance.
+
+Short or empty history is valid evidence with unavailable metrics, not an error
+and not a zero substitute. The current fictional history service has **no expected
+per-symbol runtime domain failures after input validation**, so `errors` is empty
+(typed with the existing `SymbolError` convention). This wrapper deliberately does
+not invent provider failures or catch `ValueError`, downstream `ValidationError`,
+arithmetic errors, or other programming errors. Such errors propagate, and a
+mismatched returned symbol/range is rejected. A future live adapter must define
+its expected domain exceptions and safe per-symbol mappings before it is added.
+
+There are no rankings, signals, recommendations, or cross-stock calculations.
+Later comparisons must check matching **actual metric windows, units, adjustment
+basis, and availability**, not merely matching requested dates. Unknown adjustment
+basis remains a limitation; this milestone does not establish suitability of real
+provider data or authorize Gemini integration.
