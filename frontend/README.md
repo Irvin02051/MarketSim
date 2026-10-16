@@ -67,8 +67,10 @@ npm run build
 The research API helper has mocked tests using Node’s built-in test runner and
 TypeScript stripping (validated on Node 22.14.0; no added test dependencies).
 These tests cover validation, success, unavailable evidence, clarification, HTTP
-errors, network errors, malformed responses, and cancellation. They do not mount
-React or replace browser layout, keyboard, and screen-reader checks.
+errors, network errors, malformed responses, and cancellation. Historical evidence
+also has rendered-HTML tests using the installed TypeScript compiler and React
+server renderer. These assert real component output and text escaping, but do not
+mount an interactive page or replace browser layout, keyboard, and screen-reader checks.
 Stop each server with Control-C in its own terminal; run `deactivate` in the
 backend terminal afterward.
 
@@ -76,11 +78,14 @@ backend terminal afterward.
 ## Stock Research Assistant
 
 Open `/research` directly or choose **Stock research** on the dashboard. The
-example button fills the textarea without submitting. Only a user submission
+quote and historical example buttons fill the textarea without submitting. Only a user submission
 sends `{"question":"..."}` to `/api/research/agent`, using the existing
 `VITE_API_BASE_URL`. Gemini keys stay exclusively in backend configuration.
 Supported research covers AAPL, MSFT, and NVDA quotes, reported daily ranges,
-and percentage changes; it is educational and not financial advice.
+percentage changes, and historical price change, SMA20/SMA50, and adjacent-return
+volatility. History is fictional, covering 2024–2025; questions should include
+explicit start/end dates. Predictions are unsupported. This is educational research,
+not financial advice.
 
 The client validates the fields it displays and rejects malformed responses.
 It renders findings as plain text and never calculates new research metrics.
@@ -89,6 +94,35 @@ timeout, and unavailable outcomes are shown explicitly. Available evidence,
 source labels, trading dates, fetch timestamps, limitations, and symbol errors
 remain visible even if the explanation is unavailable. Fictional quote metadata
 always triggers a prominent demo label. Tool activity is collapsed by default.
+
+The main heading and live announcement use the backend's **overall `status`**.
+For historical-only success, `status="answered"` takes precedence over the old
+quote compatibility explanation (`historical_answer_available`). That notice is
+replaced with a historical success message; genuine clarification and unavailable
+outcomes retain their own safe message. Quote-only and mixed results remain supported.
+The current client requires the additive fields provided by the merged backend;
+responses missing them fail safely instead of silently dropping historical data.
+
+Historical findings are backend-rendered plain text with evidence-reference links
+to per-stock cards. Cards display exact Decimal strings, units, actual windows and
+observation counts for all four metrics. There is no conversion of metric values
+to JavaScript numbers and no client calculation of metrics, comparisons or signals.
+Long values can wrap inside cards. Unavailable metrics show their reason and available
+observation count, never a substituted zero. Empty/partial coverage, requested and
+returned ranges, source, fetch time, unknown adjustment basis, and limitations remain
+visible even when final analysis fails. Quote and historical sections are distinct:
+the fictional fixtures are separate datasets.
+
+Price change excludes dividends. Volatility uses 20 returns from 21 observations,
+is not annualized, and does not establish overall safety. These metrics describe
+fictional observations, not actual performance or forecasts. No actual exchange
+calendar or adjustment information is invented.
+
+Tool activity counts both outcome arrays and groups them by type, with validated
+historical date ranges. It does not invent a chronological ordering across arrays.
+Observed tool-request counts can exceed executed outcomes when a batch is rejected.
+Invalid arguments can have no validated symbols/dates. Singular/plural labels reflect
+the actual counts.
 
 Research has a 35-second browser timeout, separate from the unchanged five-second
 health timeout. Submissions are blocked while pending; there is no auto-submit,
@@ -104,22 +138,33 @@ localhost/127.0.0.1 frontend origins on port 5173, without credentials.
    `RESEARCH_ENABLED=false MARKET_DATA_PROVIDER=demo .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000`
    from `backend/`. Start the frontend with `npm run dev -- --port 5173 --strictPort`.
 2. Open `/research`. Confirm no research request on mount. Tab through the
-   navigation, labeled textarea, example, and submit buttons; activate the example
-   and confirm it only fills the field. Submit once and expect the safe unavailable
+   navigation, labeled textarea, both example buttons, and submit; activate each example
+   and confirm it only fills the field without a request. Submit once and expect the safe unavailable
    response from the disabled backend. Blank or oversized input must not send a request.
 3. Check a narrow mobile viewport and desktop for wrapping, visible keyboard focus,
    and expandable tool activity. Verify loading and error announcements with a
    screen reader. Stop the backend and submit to check the network error.
-4. Use mocked browser responses to check answered, clarification, and unavailable
-   responses containing evidence. Confirm fictional labels, separate dates, safe
-   plain-text rendering, and preserved evidence. Delay a mocked response to check
-   disabled controls; navigate away and confirm no stale result appears. Browser
-   automation was unavailable during implementation; these visual checks remain manual.
-5. For **one later user-triggered live-Gemini request**, stop the old backend and
+4. With research still disabled, use the browser's Network response overrides for
+   `POST /api/research/agent` to supply HTTP 200 mocked responses matching the submitted
+   question. `tests/research.test.mjs` contains historical, mixed, unavailable, empty,
+   partial and malformed fixtures. Confirm historical-only success says “Research
+   findings”, with no legacy “Clarification needed” notice. Follow each `hm` evidence
+   link to its card, check exact decimal strings and dates, then expand tool activity.
+   Mixed results must show separate quote/historical sections. Failed analysis must
+   retain evidence; empty history must show unavailable reasons; partial history must
+   retain its limitations. Malformed data must show a safe error.
+5. Test at 320px and desktop width, including a 634-digit metric string: no horizontal
+   page overflow, clipped values or inaccessible evidence links. Tab/Enter/Space through
+   example buttons, submit, evidence links and activity summary. Delay a mocked response
+   to verify all submission/example controls stay disabled; navigate away and confirm
+   no stale result appears. Browser automation was unavailable during implementation;
+   these interaction, mobile and screen-reader checks remain manual. The rendered-HTML
+   tests do not establish them.
+6. For **one later user-triggered live-Gemini request**, stop the old backend and
    restart from `backend/` with your locally configured ignored `.env`:
    `RESEARCH_ENABLED=true MARKET_DATA_PROVIDER=demo .venv/bin/python -m uvicorn app.main:app --env-file .env --host 127.0.0.1 --port 8000`
-   Open `/research`, select the example, then explicitly submit once. This calls
-   Gemini with fictional quote evidence; review the outcome and tool activity.
+   Open `/research`, select the historical example, then explicitly submit once. This calls
+   Gemini with fictional historical evidence; review the outcome, cards and tool activity.
    No live request was executed for this milestone. Keep the server on loopback;
    there is no real authentication or daily spending cap.
 

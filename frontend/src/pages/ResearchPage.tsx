@@ -1,31 +1,36 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link } from 'react-router-dom'
-import { ResearchError, requestResearch, validateQuestion } from '../lib/research'
+import HistoricalResearchEvidence from '../components/HistoricalResearchEvidence'
+import { ResearchError, requestResearch, researchOutcome, validateQuestion } from '../lib/research'
 import type { ResearchResult } from '../lib/research'
 import '../styles/DashboardPage.css'
 import '../styles/ResearchPage.css'
 
 const example = 'Compare Apple and Microsoft reported percentage changes.'
+const historicalExample = 'Compare Apple and Microsoft price change from 2025-01-01 to 2025-03-31 using fictional historical data.'
 type State = { kind: 'initial' | 'loading' } | { kind: 'error'; message: string } | { kind: 'result'; result: ResearchResult }
 const labels = { answered: 'Research findings', unavailable: 'Explanation unavailable',
   unsupported: 'Request not supported', clarification: 'Clarification needed' }
 
 function Results({ result }: { result: ResearchResult }) {
   const { explanation, quotes } = result
+  const outcome = researchOutcome(result)
+  const outcomeCount = result.tool_outcomes.length + result.historical_tool_outcomes.length
+  const showHistory = result.historical_evidence.length > 0 || result.historical_tool_outcomes.length > 0
   return <section className="research-results" aria-label="Research result">
-    <h2>{labels[explanation.status]}</h2>
+    <h2>{labels[outcome.status]}</h2>
     <p className="research-question">Question: {result.question}</p>
-    <p>{explanation.message}</p>
-    <p className="research-meta">Outcome: {explanation.code}</p>
+    <p>{outcome.message}</p>
+    <p className="research-meta">Outcome: {outcome.code}</p>
     {quotes && <>
       <p className="research-provenance">{quotes.label}</p>
       {quotes.evidence.some((e) => e.fictional || e.quote.source === 'demo' || e.quote.data_kind === 'fictional')
         && <p className="research-fictional">FICTIONAL DEMO DATA — not actual market performance.</p>}
     </>}
-    {explanation.findings.length > 0 && <ul className="research-findings">
+    {explanation.findings.length > 0 && <><h2>Quote findings</h2><ul className="research-findings">
       {explanation.findings.map((finding, i) => <li key={i}>{finding.statement}</li>)}
-    </ul>}
+    </ul></>}
     <p className="research-meta">The model selects findings; the backend validates and renders numerical statements.</p>
     {quotes && <>
       <h2>Quote evidence</h2>
@@ -48,12 +53,21 @@ function Results({ result }: { result: ResearchResult }) {
         <li key={i}>{limitation}</li>)}</ul></>}
     </>}
     {!quotes && <p>No quote evidence was collected.</p>}
-    <details className="research-activity"><summary>Tool activity ({result.tool_outcomes.length} outcomes)</summary>
-      <p>{result.model_calls} model calls; {result.tool_requests} tool requests observed.</p>
-      {!result.tool_outcomes.length && <p>No tool outcomes recorded.</p>}
-      <ul>{result.tool_outcomes.map((outcome, i) => <li key={i}>
+    {showHistory && <HistoricalResearchEvidence evidence={result.historical_evidence} findings={result.historical_findings} />}
+    <details className="research-activity"><summary>Tool activity ({outcomeCount} {outcomeCount === 1 ? 'outcome' : 'outcomes'})</summary>
+      <p>{result.model_calls} model {result.model_calls === 1 ? 'call' : 'calls'};{' '}
+        {result.tool_requests} tool {result.tool_requests === 1 ? 'request' : 'requests'} observed.</p>
+      {!outcomeCount && <p>No tool outcomes recorded.</p>}
+      {!!outcomeCount && <p>Grouped by tool type; the API does not provide a combined chronological order.</p>}
+      {!!result.tool_outcomes.length && <><h3>Quote and unknown tool outcomes</h3><ul>{result.tool_outcomes.map((outcome, i) => <li key={i}>
         {outcome.tool} · {outcome.symbols.join(', ') || 'No validated symbols'} · {outcome.code}
-      </li>)}</ul>
+      </li>)}</ul></>}
+      {!!result.historical_tool_outcomes.length && <><h3>Historical tool outcomes</h3><ul>
+        {result.historical_tool_outcomes.map((outcome, i) => <li key={i}>
+          {outcome.tool} · {outcome.symbols.join(', ') || 'No validated symbols'} · {outcome.code}
+          <br />{outcome.start_date && outcome.end_date ? `${outcome.start_date} through ${outcome.end_date}` : 'No validated date range'}
+        </li>)}
+      </ul></>}
     </details>
   </section>
 }
@@ -106,7 +120,7 @@ export default function ResearchPage() {
   }
   const busy = state.kind === 'loading'
   const announcement = busy ? 'Research request in progress…' : state.kind === 'error' ? state.message
-    : state.kind === 'result' ? labels[state.result.explanation.status] : ''
+    : state.kind === 'result' ? labels[state.result.status] : ''
   return <div className="dashboard-page research-page">
     <a className="dashboard-skip-link" href="#research-main">Skip to research</a>
     <header className="dashboard-header"><div className="dashboard-header-inner">
@@ -116,7 +130,9 @@ export default function ResearchPage() {
     <main className="dashboard-main" id="research-main">
       <div className="dashboard-intro"><p className="dashboard-kicker">EXPLORE WITH EVIDENCE</p>
         <h1 ref={heading} tabIndex={-1}>Stock Research Assistant</h1>
-        <p>Compare reported quotes, daily ranges, and percentage changes for Apple (AAPL), Microsoft (MSFT), and Nvidia (NVDA). Historical analysis and predictions are not supported.</p>
+        <p>Explore quotes and historical metrics for Apple (AAPL), Microsoft (MSFT), and Nvidia (NVDA).
+          Fictional history covers 2024–2025. Include explicit start and end dates in historical questions.
+          Predictions are not supported.</p>
       </div>
       <form className="research-form dashboard-panel" onSubmit={submit} aria-busy={busy}>
         <label htmlFor="research-question">Your question</label>
@@ -126,8 +142,10 @@ export default function ResearchPage() {
         <div className="research-actions">
           <button type="submit" disabled={busy}>{busy ? 'Researching…' : 'Research stocks'}</button>
           <button type="button" disabled={busy} onClick={() => setQuestion(example)}>Use example question</button>
+          <button type="button" disabled={busy} onClick={() => setQuestion(historicalExample)}>Use historical example</button>
         </div>
         <p className="research-example">Example: {example}</p>
+        <p className="research-example">Historical example: {historicalExample}</p>
       </form>
       <p role="status" aria-live="polite" aria-atomic="true" className={state.kind === 'error' ? 'research-error' : 'research-status'}>{announcement}</p>
       {state.kind === 'initial' && <p>Ask a question to collect evidence. No research requests are made until you submit.</p>}
