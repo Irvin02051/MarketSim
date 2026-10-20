@@ -76,3 +76,7 @@
   .form-heading h1 { font-size: 31px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } }
+
+.auth-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
+.auth-fields:disabled { opacity: .7; }
+.submit-button:disabled { cursor: wait; }

@@ -143,3 +143,6 @@
   .dashboard-stock-numbers { width: 100%; justify-content: space-between; text-align: left; }
   .dashboard-stock-numbers > div:last-child { text-align: right; }
 }
+
+.dashboard-signout { background: transparent; border: 1px solid currentColor; border-radius: 6px; padding-inline: 12px; cursor: pointer; }
+.dashboard-signout:disabled { opacity: .7; cursor: wait; }
