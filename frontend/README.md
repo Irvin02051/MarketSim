@@ -31,7 +31,8 @@ base URL. Trailing slashes are supported. Do not include credentials, a query,
 or a fragment in this URL. Restart Vite after changing environment settings;
 production bundles must be rebuilt. All `VITE_` values are public browser
 configuration: never put passwords, tokens, or secret keys there.
-`.env.local` is ignored; `.env.example` contains only a public local URL.
+`.env.local` is ignored; `.env.example` contains a public local API URL and blank
+optional public authentication settings.
 
 If a port is occupied, do not stop another project's server. For the backend,
 choose another free port and update your local API URL, then restart Vite.
@@ -234,3 +235,62 @@ in development.
 History helper tests run with `npm test` alongside the research tests and need no
 server or credentials. The production build was run with a temporary configuration
 outside the repository setting `envDir: false`, so no actual `.env` files were read.
+
+## Authentication session foundation
+
+The root `AuthProvider` supplies `useAuth()` with `loading`, `signed_out`,
+`signed_in` (session and user), or `unavailable`. This is UI state only, not backend
+authorization. Existing forms, demo routes, and API clients are unchanged. No
+account creation, login/logout controls, protected routes, or backend verification
+are implemented here. No auth error banner is added to demo pages.
+
+Optional public configuration names are `VITE_SUPABASE_URL` and
+`VITE_SUPABASE_PUBLISHABLE_KEY`. Use the project's HTTPS root URL and current
+`sb_publishable_...` key. The example leaves both blank. Missing/invalid values,
+inaccessible browser storage, or client creation errors produce unavailable state.
+Invalid configuration never creates an SDK client. Syntax checks cannot establish
+whether a project/key exists or is accepted by Supabase. Never put secret/service-role
+keys, database passwords, JWT signing secrets, or provider credentials in React.
+
+One lazy client uses native `window.sessionStorage`, SDK persistence and automatic
+refresh. No custom storage or refresh loop is implemented. Sessions survive reloads
+within the tab's browser session; tab duplication/browser session restoration can
+copy or restore this storage. Closing a tab is not server-side logout. Storage is
+accessible to same-origin JavaScript and is not protection against XSS. Remember me
+remains unwired. URL session detection is disabled until confirmation/form integration.
+
+The provider subscribes before `getSession()`. Callbacks synchronously publish state
+without additional auth calls. New auth events supersede pending initialization,
+including errors. Late INITIAL_SESSION events cannot overwrite completed initialization
+or newer events. Cleanup unsubscribes and ignores late results/callbacks; Strict Mode
+effect remounts reuse the client with a fresh observer. Raw errors are never exposed
+or logged. The separate context/hook module keeps component exports separate.
+
+Supabase JS 2.118.0 requires Node >=22 and has no React peer dependency. Installation
+was checked against Node 22.14.0 and React 19.3.0 without upgrading existing packages.
+Official documentation consulted October 20, 2026:
+[initialization](https://supabase.com/docs/reference/javascript/initializing),
+[session retrieval](https://supabase.com/docs/reference/javascript/auth-getsession),
+[subscriptions and cleanup](https://supabase.com/docs/reference/javascript/auth-onauthstatechange),
+and [runtime support](https://github.com/supabase/supabase-js#support-policy).
+
+Auth tests use mocked clients/storage and the same observer invoked by the React
+effect. They cover initialization, events, cleanup/remount races, and redacted failures
+without real keys or network calls. They do not replace mounted browser tests.
+Later manual checks should confirm unchanged demo pages without configuration,
+browser session-storage behavior, and restoration/refresh after forms are connected.
+
+To validate without loading actual `.env` files, run `npm test` and `npm run lint`.
+For the build, use the existing temporary-config approach from `frontend/`:
+
+```sh
+validation_config=$(mktemp /tmp/marketsim-vite-XXXXXX.mjs)
+cat > "$validation_config" <<'CONFIG'
+import config from '/Users/irvin/Documents/MarketSim/frontend/vite.config.ts'
+export default { ...config, envDir: false }
+CONFIG
+npm run build -- --config "$validation_config"
+```
+
+Use a clean validation shell without exported application credentials: `envDir: false`
+disables environment-file loading, but Vite still sees exported shell variables.
