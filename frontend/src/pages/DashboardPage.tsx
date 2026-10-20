@@ -1,5 +1,8 @@
-import { useEffect, useRef } from 'react'
-import { Link } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
+import { useAuth } from '../auth/authContext'
+import { authMessages, createSubmissionGate, getBrowserAuthClient, signOutLocal } from '../lib/auth'
+import type { AuthOutcome } from '../lib/auth'
 import ServiceStatus from '../components/ServiceStatus'
 import '../styles/DashboardPage.css'
 
@@ -17,6 +20,24 @@ const sampleWatchlist = [
 ]
 
 export default function DashboardPage() {
+  const auth = useAuth()
+  const navigate = useNavigate()
+  const gate = useRef(createSubmissionGate())
+  const mounted = useRef(false)
+  const [busy, setBusy] = useState(false)
+  const [outcome, setOutcome] = useState<AuthOutcome | null>(null)
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
+  function signOut() {
+    void gate.current(async () => {
+      setBusy(true)
+      const result = await signOutLocal(getBrowserAuthClient()?.auth ?? null)
+      if (mounted.current) {
+        setOutcome(result); setBusy(false)
+        if (result === 'signed_out') navigate('/login', { replace: true, state: { signedOut: true } })
+      }
+      return result
+    })
+  }
   const headingRef = useRef<HTMLHeadingElement>(null)
 
   useEffect(() => {
@@ -36,6 +57,7 @@ export default function DashboardPage() {
           <nav className="dashboard-navigation" aria-label="Dashboard navigation">
             <Link className="dashboard-back-link" to="/research">Stock research</Link>
             <span className="dashboard-demo-badge">Demo mode</span>
+            {auth.status === 'signed_in' && <button className="dashboard-back-link dashboard-signout" type="button" disabled={busy} onClick={signOut}>{busy ? 'Signing out…' : 'Sign out'}</button>}
             <Link className="dashboard-back-link" to="/login">Back to login <span aria-hidden="true">↗</span></Link>
           </nav>
         </div>
@@ -48,6 +70,8 @@ export default function DashboardPage() {
           <p>Welcome to MarketSim. Explore a sample portfolio and get familiar with your future investing workspace.</p>
         </div>
 
+        <p role="status">{outcome === 'failed' ? 'Unable to sign out. Please try again.' : outcome ? authMessages[outcome] : ''}</p>
+        <p>All portfolio balances and holdings on this page are fictional demo values, not personal account data.</p>
         <ServiceStatus />
 
         <section className="dashboard-summary" aria-label="Demo portfolio summary">

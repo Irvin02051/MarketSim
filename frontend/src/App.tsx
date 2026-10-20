@@ -1,4 +1,5 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
+import AuthCallbackPage from './pages/AuthCallbackPage'
 import LoginPage from './pages/LoginPage'
 import SignupPage from './pages/SignupPage'
 import DashboardPage from './pages/DashboardPage'
@@ -7,6 +8,7 @@ import StockHistoryPage from './pages/StockHistoryPage'
 import './App.css'
 export default function App() {
   return <BrowserRouter><Routes>
+    <Route path="/auth/callback" element={<AuthCallbackPage />} />
     <Route path="/login" element={<LoginPage />} />
     <Route path="/signup" element={<SignupPage />} />
     <Route path="/dashboard" element={<DashboardPage />} />

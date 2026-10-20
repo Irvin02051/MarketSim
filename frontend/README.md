@@ -1,7 +1,7 @@
 # MarketSim frontend
 
 React dashboard with static demo data, an API health indicator, a research interface,
-and fictional stock-history charts. Authentication and trading remain demos.
+and fictional stock-history charts. Authentication uses Supabase when configured; portfolio data and trading remain demos.
 
 ## Run both servers (separate terminals)
 
@@ -240,9 +240,10 @@ outside the repository setting `envDir: false`, so no actual `.env` files were r
 
 The root `AuthProvider` supplies `useAuth()` with `loading`, `signed_out`,
 `signed_in` (session and user), or `unavailable`. This is UI state only, not backend
-authorization. Existing forms, demo routes, and API clients are unchanged. No
-account creation, login/logout controls, protected routes, or backend verification
-are implemented here. No auth error banner is added to demo pages.
+authorization. Login/signup forms now call Supabase, with confirmation handling and
+a dashboard sign-out control. Demo routes and API clients remain public: no route
+protection or backend verification is implemented. No auth error banner is added
+to demo pages.
 
 Optional public configuration names are `VITE_SUPABASE_URL` and
 `VITE_SUPABASE_PUBLISHABLE_KEY`. Use the project's HTTPS root URL and current
@@ -257,7 +258,8 @@ refresh. No custom storage or refresh loop is implemented. Sessions survive relo
 within the tab's browser session; tab duplication/browser session restoration can
 copy or restore this storage. Closing a tab is not server-side logout. Storage is
 accessible to same-origin JavaScript and is not protection against XSS. Remember me
-remains unwired. URL session detection is disabled until confirmation/form integration.
+is unavailable and its checkbox has been removed. Automatic URL session detection
+remains disabled; only the dedicated callback handles confirmation tokens.
 
 The provider subscribes before `getSession()`. Callbacks synchronously publish state
 without additional auth calls. New auth events supersede pending initialization,
@@ -278,7 +280,7 @@ Auth tests use mocked clients/storage and the same observer invoked by the React
 effect. They cover initialization, events, cleanup/remount races, and redacted failures
 without real keys or network calls. They do not replace mounted browser tests.
 Later manual checks should confirm unchanged demo pages without configuration,
-browser session-storage behavior, and restoration/refresh after forms are connected.
+browser session-storage behavior, and restoration/refresh with the connected forms.
 
 To validate without loading actual `.env` files, run `npm test` and `npm run lint`.
 For the build, use the existing temporary-config approach from `frontend/`:
@@ -294,3 +296,99 @@ npm run build -- --config "$validation_config"
 
 Use a clean validation shell without exported application credentials: `envDir: false`
 disables environment-file loading, but Vite still sees exported shell variables.
+
+
+## Login, signup, confirmation and local sign-out
+
+Forms reuse the single client and call `signInWithPassword` or `signUp`. Existing
+name, email, password, confirmation, educational acknowledgment, and visibility
+controls remain. Submission disables fields and uses a synchronous request gate;
+password fields clear immediately after starting a valid submission. Unmounted
+pages ignore late results. Raw provider errors never enter UI messages or logs.
+Successful password login navigates to `/dashboard` with history replacement.
+Signup/callback success retains its fixed dashboard link; no external redirect
+or query-supplied destination is used. No-session signup results use a
+neutral check-email message, including obfuscated existing-user responses. They
+do not establish that an account was created. `full_name` is sent as user metadata:
+it is user-editable display data, never authorization. There is no profile table.
+
+The client explicitly retains the browser implicit flow. The trusted public
+`VITE_AUTH_CALLBACK_URL` must be an absolute same-origin `/auth/callback` URL,
+without credentials, query or fragment. HTTPS is required except for loopback
+localhost/127.0.0.1/IPv6 development. Missing/invalid callback configuration blocks
+signup, while configured password login still works. The callback removes the
+query and fragment from browser history before processing; it accepts only signup
+bearer-token fragments and calls SDK `setSession` once per page mount, sharing the
+promise during Strict Mode effect replay. Automatic URL detection stays disabled,
+so the SDK cannot process the same tokens twice. PKCE codes, recovery callbacks,
+missing/duplicate token fields, provider errors, and query redirects fail safely.
+The SDK validates/restores the session and publishes auth events to the provider.
+Reloading a consumed callback shows a safe failure; use the login link to continue.
+Tokens are never placed in UI messages or custom storage. Implicit callback tokens
+exist briefly in the browser fragment; keep this page free of third-party scripts.
+
+Signed-in dashboard visitors can sign out with `signOut({ scope: 'local' })`.
+Success navigates to `/login` with history replacement and router state carrying
+a fixed “Signed out successfully.” status announcement. A new login attempt clears
+both the announcement and its router state, even if form validation fails.
+Sign-out failures stay on the dashboard with a safe retryable error.
+Signed-out demo visitors retain navigation.
+Existing access tokens can remain valid until expiry, even after local sign-out.
+Dashboard balances remain fictional and are not a user's personal portfolio.
+Password recovery is explicitly unavailable. The educational acknowledgment is
+not presented as a legal terms or privacy policy.
+
+### Supabase dashboard setup for a later manual test
+
+1. Use a hosted project with Email provider/signup enabled. Enable Confirm email
+   to test the confirmation path. No service-role or signing secret is needed.
+2. Under Authentication → URL Configuration, set Site URL to
+   `http://localhost:5173` and add the exact redirect
+   `http://localhost:5173/auth/callback`. Use this origin consistently. If using
+   `127.0.0.1`, use its corresponding Site URL, allowlist entry and frontend setting;
+   the callback setting must match the browser origin.
+3. Keep the standard confirmation email link using `{{ .ConfirmationURL }}`.
+   Custom token-hash/PKCE/recovery templates are not this callback's contract.
+4. Default SMTP is restricted to organization-team addresses and currently two
+   emails/hour; configure custom SMTP for other recipients. Do not share SMTP
+   passwords or other secret values. Email delivery/account configuration are not
+   verified by mocked tests.
+5. Locally configure the public project URL and publishable key plus
+   `VITE_AUTH_CALLBACK_URL=http://localhost:5173/auth/callback`, then restart Vite.
+   The tracked example intentionally contains blank placeholders. Never paste
+   passwords, session tokens or secret keys into chat or frontend configuration.
+
+Manual checks: pending signup/email delivery, confirmation success and expired
+links, incorrect-password errors, login and session restoration after reload,
+local sign-out success/failure, duplicate-click/loading behavior, keyboard focus,
+password visibility and mobile layout. Check unconfigured forms and anonymous
+demo access too. Auto-confirm projects can return a signup session directly; that
+branch is mocked without changing hosted project settings. No live requests were
+made during implementation.
+
+Official references consulted for this integration:
+[signup](https://supabase.com/docs/reference/javascript/auth-signup),
+[password login](https://supabase.com/docs/reference/javascript/auth-signinwithpassword),
+[implicit flow](https://supabase.com/docs/guides/auth/sessions/implicit-flow),
+[setSession](https://supabase.com/docs/reference/javascript/auth-setsession),
+[redirect URLs](https://supabase.com/docs/guides/auth/redirect-urls),
+[sign-out](https://supabase.com/docs/guides/auth/signout), and
+[SMTP restrictions](https://supabase.com/docs/guides/auth/auth-smtp).
+Installed SDK 2.118.0 was inspected; no dependency changes were needed.
+
+`auth-forms.test.mjs` covers mocked SDK outcomes, trusted redirect validation,
+callback cleanup/deduplication, local sign-out and duplicate submission gating.
+It also renders actual form/dashboard components to static HTML, checking visible
+controls and demo wording. These are helper and server-rendered HTML tests, not
+mounted browser interaction tests; manual checks above remain necessary.
+
+
+Authentication feedback separates generic login rejection from connection/service
+failures and missing configuration. It never echoes provider messages or reveals
+whether an account exists. Expired/used confirmation-link wording appears only
+on the callback page. Signup pending behavior and sessionStorage are unchanged.
+The navigation regressions execute actual component handlers with mocked React
+hooks/router/SDK responses; they are handler-level interaction tests, not mounted
+React DOM/browser tests. Helper and static HTML checks remain separate. Manually
+verify replacement navigation/Back behavior, screen-reader sign-out feedback,
+notice clearing on a new attempt, and staying on the dashboard after failed logout.

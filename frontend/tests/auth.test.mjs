@@ -39,7 +39,7 @@ test('one client uses the supplied native session storage and SDK refresh', () =
     count++
     assert.equal(url, configuration.VITE_SUPABASE_URL)
     assert.equal(key, configuration.VITE_SUPABASE_PUBLISHABLE_KEY)
-    assert.deepEqual(options.auth, { storage, persistSession: true, autoRefreshToken: true, detectSessionInUrl: false })
+    assert.deepEqual(options.auth, { storage, persistSession: true, autoRefreshToken: true, detectSessionInUrl: false, flowType: 'implicit' })
     return client
   })
   assert.equal(get(), client)

@@ -24,6 +24,6 @@ export default function AuthLayout({ children, variant }: { children: ReactNode;
       </div>
       <p className="brand-footer">A market simulator. A smarter place to start.</p>
     </aside>
-    <main className="form-panel"><div className="environment-label">● &nbsp; FRONTEND PREVIEW</div><div className="form-container">{children}</div><footer className="form-footer">MarketSim &nbsp; • &nbsp; Built for learning. Designed for growth.</footer></main>
+    <main className="form-panel"><div className="environment-label">● &nbsp; EDUCATIONAL SIMULATION</div><div className="form-container">{children}</div><footer className="form-footer">MarketSim &nbsp; • &nbsp; Built for learning. Designed for growth.</footer></main>
   </div>
 }

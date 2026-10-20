@@ -33,7 +33,8 @@ export function createAuthClientGetter(
         storage: storage(),
         persistSession: true,
         autoRefreshToken: true,
-        // Confirmation/redirect flows belong to the later form milestone.
+        // Only the dedicated callback page processes URL tokens.
+        flowType: 'implicit',
         detectSessionInUrl: false,
       } })
     } catch {
@@ -94,4 +95,98 @@ export function observeAuth(auth: AuthClient | null, publish: (state: AuthState)
     publish({ status: 'unavailable' })
   }
   return stop
+}
+
+export type AuthOutcome = 'signed_in' | 'confirmation_pending' | 'signed_out' | 'failed' | 'unavailable' | 'login_failed' | 'network_failed'
+export const authMessages: Record<AuthOutcome, string> = {
+  signed_in: 'Signed in. The dashboard still shows fictional demo data, not your personal portfolio.',
+  confirmation_pending: 'If signup can proceed, check your email for a confirmation link. If you already have an account, try logging in. This response does not confirm that an account was created.',
+  signed_out: 'Signed out of this session.',
+  failed: 'Unable to complete authentication. Please try again later.',
+  login_failed: 'Unable to log in. Check your email and password and try again.',
+  network_failed: 'Unable to reach the authentication service. Check your connection and try again later.',
+  unavailable: 'Authentication is unavailable. Check the public application configuration. Demo access is still available.',
+}
+
+type FormAuth = Pick<SupabaseClient['auth'], 'signUp' | 'signInWithPassword' | 'signOut' | 'setSession'>
+
+export function trustedCallback(value: unknown, origin: string): string | null {
+  if (typeof value !== 'string' || !value || value !== value.trim()) return null
+  try {
+    const url = new URL(value)
+    const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
+    if (url.origin !== origin || url.pathname !== '/auth/callback' || url.search || url.hash
+      || url.username || url.password || !(url.protocol === 'https:' || (local && url.protocol === 'http:'))) return null
+    return url.href
+  } catch { return null }
+}
+
+export function browserCallback(): string | null {
+  return trustedCallback(import.meta.env?.VITE_AUTH_CALLBACK_URL, window.location.origin)
+}
+
+function credentialFailure(error: unknown, mode: 'login' | 'signup'): AuthOutcome {
+  if (typeof error === 'object' && error !== null) {
+    const details = error as { name?: unknown; status?: unknown; code?: unknown }
+    if (details.code === 'invalid_api_key') return 'unavailable'
+    if (details.name === 'AuthRetryableFetchError' || details.name === 'TypeError'
+      || (typeof details.status === 'number' && details.status >= 500)) return 'network_failed'
+  }
+  return mode === 'login' ? 'login_failed' : 'failed'
+}
+
+export async function submitCredentials(auth: FormAuth | null, input: {
+  mode: 'login' | 'signup'; email: string; password: string; fullName: string
+}, callback: string | null): Promise<AuthOutcome> {
+  if (!auth || (input.mode === 'signup' && !callback)) return 'unavailable'
+  try {
+    const { data, error } = input.mode === 'login'
+      ? await auth.signInWithPassword({ email: input.email.trim(), password: input.password })
+      : await auth.signUp({ email: input.email.trim(), password: input.password,
+        options: { emailRedirectTo: callback!, data: { full_name: input.fullName.trim() } } })
+    if (error) return credentialFailure(error, input.mode)
+    if (data.session) return 'signed_in'
+    return input.mode === 'signup' ? 'confirmation_pending' : 'login_failed'
+  } catch (error) { return credentialFailure(error, input.mode) }
+}
+
+export async function signOutLocal(auth: FormAuth | null): Promise<AuthOutcome> {
+  if (!auth) return 'unavailable'
+  try { return (await auth.signOut({ scope: 'local' })).error ? 'failed' : 'signed_out' }
+  catch { return 'failed' }
+}
+
+// Retains only one result promise, not callback tokens. Reused across Strict Mode effects.
+export function createConfirmationHandler() {
+  let pending: Promise<AuthOutcome> | undefined
+  return (auth: FormAuth | null, location: { origin: string; pathname: string; search: string; hash: string },
+    callback: string | null, clearUrl: () => void): Promise<AuthOutcome> => {
+    if (pending) return pending
+    const run = async (): Promise<AuthOutcome> => {
+      // Remove credentials/errors from the address bar even for invalid callbacks.
+      clearUrl()
+      if (!auth || !callback) return 'unavailable'
+      if (`${location.origin}${location.pathname}` !== callback || location.search || location.hash.length > 16384) return 'failed'
+      const params = new URLSearchParams(location.hash.replace(/^#/, ''))
+      if (params.has('error') || params.has('error_code') || params.get('type') !== 'signup'
+        || params.get('token_type') !== 'bearer'
+        || ['access_token', 'refresh_token', 'type', 'token_type'].some((key) => params.getAll(key).length !== 1)) return 'failed'
+      const access_token = params.get('access_token'), refresh_token = params.get('refresh_token')
+      if (!access_token || !refresh_token) return 'failed'
+      const { data, error } = await auth.setSession({ access_token, refresh_token })
+      return !error && data.session ? 'signed_in' : 'failed'
+    }
+    pending = run().catch(() => 'failed')
+    return pending
+  }
+}
+
+/** Component-owned gate: prevents concurrent submissions before React rerenders. */
+export function createSubmissionGate() {
+  let busy = false
+  return async (work: () => Promise<AuthOutcome>): Promise<AuthOutcome | null> => {
+    if (busy) return null
+    busy = true
+    try { return await work() } finally { busy = false }
+  }
 }
