@@ -56,7 +56,7 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(response.headers.get('access-control-allow-origin'), origin if allowed else None)
             self.assertNotIn('access-control-allow-credentials', response.headers)
             self.assertIn('content-type', response.headers['access-control-allow-headers'].lower())
-        for method, header in [('DELETE', 'content-type'), ('POST', 'authorization')]:
+        for method, header in [('DELETE', 'content-type'), ('POST', 'x-unapproved-header')]:
             response = self.client.options('/api/research/agent', headers={
                 'Origin': 'http://localhost:5173', 'Access-Control-Request-Method': method,
                 'Access-Control-Request-Headers': header,
@@ -484,3 +484,94 @@ class AgentApiTests(unittest.TestCase):
                     self.assertEqual(response.json()['explanation']['code'], 'research_timeout')
                     self.assertFalse(app.state.research.active.locked())
             client.portal.call(exercise)
+
+
+class IdentityApiTests(unittest.TestCase):
+    def setUp(self):
+        environment = patch.dict('os.environ', {'MARKET_DATA_PROVIDER': 'demo',
+                                'RESEARCH_ENABLED': 'false'}, clear=True)
+        environment.start()
+        self.addCleanup(environment.stop)
+        for transport, method in [('AsyncHTTPTransport', 'handle_async_request'),
+                                  ('HTTPTransport', 'handle_request')]:
+            guard = patch(f'httpx.{transport}.{method}', side_effect=AssertionError('Network forbidden'))
+            mocked = guard.start()
+            self.addCleanup(guard.stop)
+            self.addCleanup(mocked.assert_not_called)
+        self.client = TestClient(app)
+        self.client.__enter__()
+        self.auth_client = app.state.identity.client
+        self.addCleanup(self.check_closed)
+        self.addCleanup(self.client.__exit__, None, None, None)
+
+    def check_closed(self):
+        self.assertTrue(self.auth_client.is_closed)
+
+    def test_missing_and_malformed_credentials_before_configuration(self):
+        for headers in [{}, {'Authorization': 'Basic x'}, {'Authorization': 'Bearer x,y'},
+                        [('Authorization', 'Bearer a'), ('authorization', 'Bearer b')],
+                        {'Authorization': 'Bearer ' + 'a' * 8192}]:
+            response = self.client.get('/api/me', headers=headers)
+            self.assertEqual(response.status_code, 401)
+            self.assertEqual(response.headers['www-authenticate'], 'Bearer')
+            self.assertEqual(response.headers['cache-control'], 'no-store')
+        response = self.client.get('/api/me?access_token=TEST', headers={'Cookie': 'access_token=TEST'})
+        self.assertEqual(response.status_code, 401)
+        response = self.client.request('GET', '/api/me', json={'access_token': 'TEST'})
+        self.assertEqual(response.status_code, 401)
+
+    def test_missing_configuration_and_public_routes(self):
+        response = self.client.get('/api/me', headers={'Authorization': 'Bearer TEST'})
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.headers['cache-control'], 'no-store')
+        self.assertEqual(self.client.get('/health').status_code, 200)
+        self.assertEqual(self.client.get('/api/stocks/AAPL/quote').status_code, 200)
+        self.assertEqual(self.client.get('/api/stocks/AAPL/history', params={
+            'start_date': '2025-01-01', 'end_date': '2025-01-03',
+        }).status_code, 200)
+        self.assertEqual(self.client.post('/api/research', json={
+            'question': 'Compare', 'symbols': ['AAPL'],
+        }).status_code, 503)
+        self.assertEqual(self.client.post('/api/research/agent', json={'question': 'Compare'}).status_code, 503)
+
+    def test_mocked_identity_status_contract_and_secrecy(self):
+        from app.auth import IdentityVerifier
+
+        output = io.StringIO()
+        handler = logging.StreamHandler(output)
+        logging.getLogger().addHandler(handler)
+        self.addCleanup(logging.getLogger().removeHandler, handler)
+        user = '12345678-1234-4234-8234-123456789abc'
+        for upstream_status, body, status in [
+            (200, {'id': user, 'email': 'PRIVATE'}, 200),
+            (403, {'code': 'bad_jwt', 'msg': 'PRIVATE'}, 401),
+            (200, {'id': 'PRIVATE'}, 503),
+            (429, {'msg': 'PRIVATE'}, 503), (500, {'msg': 'PRIVATE'}, 503),
+        ]:
+            upstream = httpx.AsyncClient(transport=httpx.MockTransport(
+                lambda request, code=upstream_status, payload=body: httpx.Response(code, json=payload)))
+            try:
+                app.state.identity = IdentityVerifier(upstream, 'https://example.supabase.co',
+                                                       'sb_publishable_PRIVATE')
+                response = self.client.get('/api/me', headers={'Authorization': 'bEaReR PRIVATE'})
+                self.assertEqual(response.status_code, status)
+                self.assertEqual(response.headers['cache-control'], 'no-store')
+                self.assertEqual(response.headers.get('www-authenticate'), 'Bearer' if status == 401 else None)
+                if status == 200:
+                    self.assertEqual(response.json(), {'user_id': user})
+                self.assertNotIn('PRIVATE', response.text)
+            finally:
+                self.client.portal.call(upstream.aclose)
+        self.assertNotIn('PRIVATE', output.getvalue())
+
+    def test_authorization_preflight(self):
+        for origin in ['http://localhost:5173', 'http://127.0.0.1:5173', 'https://unapproved.example']:
+            response = self.client.options('/api/me', headers={
+                'Origin': origin, 'Access-Control-Request-Method': 'GET',
+                'Access-Control-Request-Headers': 'Authorization',
+            })
+            allowed = origin.startswith('http:')
+            self.assertEqual(response.status_code, 200 if allowed else 400)
+            self.assertEqual(response.headers.get('access-control-allow-origin'), origin if allowed else None)
+            self.assertIn('authorization', response.headers['access-control-allow-headers'].lower())
+            self.assertNotIn('access-control-allow-credentials', response.headers)
