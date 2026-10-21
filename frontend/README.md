@@ -286,12 +286,14 @@ To validate without loading actual `.env` files, run `npm test` and `npm run lin
 For the build, use the existing temporary-config approach from `frontend/`:
 
 ```sh
-validation_config=$(mktemp /tmp/marketsim-vite-XXXXXX.mjs)
+set -e
+validation_dir=$(mktemp -d /tmp/marketsim-vite.XXXXXX)
+validation_config="$validation_dir/vite.config.mjs"
 cat > "$validation_config" <<'CONFIG'
 import config from '/Users/irvin/Documents/MarketSim/frontend/vite.config.ts'
 export default { ...config, envDir: false }
 CONFIG
-npm run build -- --config "$validation_config"
+env -i PATH="$PATH" HOME="$HOME" npm run build -- --config "$validation_config"
 ```
 
 Use a clean validation shell without exported application credentials: `envDir: false`
@@ -427,3 +429,47 @@ mounted React DOM/browser tests. Manually check direct signed-out `/account` acc
 login return and Back behavior, refresh while session initialization is pending,
 unavailable configuration, session loss, email wrapping, keyboard focus, and continued
 anonymous access to `/dashboard`, `/research`, and `/stocks/AAPL`.
+
+## Explicit backend identity check
+
+On `/account`, **Verify backend identity** performs one GET `/api/me`. Nothing
+runs on mount and there is no polling or automatic retry. The helper reuses
+`VITE_API_BASE_URL` and its path-prefix convention, requiring HTTPS except exact
+localhost, 127.0.0.1, or IPv6 loopback hosts. It obtains the current session from
+the existing SDK client; SDK refresh and sessionStorage behavior are unchanged.
+Only the access token is sent in Authorization, with cookies omitted, caching
+disabled, and redirects rejected. Never place a token in a URL.
+
+A ten-second overall timeout bounds session acquisition, fetch, and body reading.
+SDK session acquisition cannot itself be cancelled, but its late result cannot
+start a fetch after cancellation/timeout. Checks are cancelled on unmount, sign-out,
+or account replacement. The keyed per-user check clears old verification immediately.
+A synchronous gate prevents duplicate submissions. Success requires a valid UUID
+matching both the requested session user and the backend result; the UUID is not
+shown. Success is a completed check, not permanent authorization. Each future
+private request must authenticate independently.
+
+Feedback distinguishes 401/login required, 503/service unavailable, configuration,
+network/redirect failure, timeout, malformed data, and identity mismatch. Failures
+do not sign the user out. Retry is explicit. Existing demo access stays public.
+
+Manual verification (not performed automatically):
+1. Keep the existing frontend Supabase URL, publishable key and callback URL for
+   the same project. Set `VITE_API_BASE_URL=http://127.0.0.1:8000` locally.
+2. In backend local configuration set `SUPABASE_URL=https://<project-ref>.supabase.co`
+   and `SUPABASE_PUBLISHABLE_KEY` to that project's publishable key, never a secret
+   or service-role key. Stop an old backend before restarting. From `backend/`,
+   if using your local `.env`, run:
+   `MARKET_DATA_PROVIDER=demo RESEARCH_ENABLED=false .venv/bin/python -m uvicorn app.main:app --env-file .env --host 127.0.0.1 --port 8000`
+3. From `frontend/`, run `npm run dev -- --host 127.0.0.1 --port 5173 --strictPort`.
+   Restart Vite after configuration changes. Log in through the existing form,
+   visit `/account`, and click Verify backend identity. No copying of tokens is
+   needed. Expect accessible progress followed by Backend identity verified.
+4. Check keyboard operation, explicit retry after stopping/restarting the backend,
+   and removal of feedback after sign-out or switching accounts. Confirm public
+   demos still work. Do not share network headers, tokens, or session storage.
+
+Tests mock session access and fetch, exercise the actual helper and cancellation/
+submission controller, and statically render the account page. They are not mounted
+browser tests. Real Supabase verification, CORS, and browser interactions still
+require the manual check. Use the environment-isolated build procedure above.
