@@ -96,7 +96,7 @@ See [frontend instructions](../frontend/README.md) for connection, unavailable,
 retry, keyboard, and mobile checks.
 
 CORS allows only `http://localhost:5173` and `http://127.0.0.1:5173`, with GET and POST
-allowed and credentials disabled. JSON research requests allow Content-Type. An unlisted
+allowed and credentials disabled. Allowed headers are Content-Type and Authorization. An unlisted
 origin receives no `Access-Control-Allow-Origin` header; CORS is browser
 access control, not authentication. The health response is unchanged.
 
@@ -182,7 +182,7 @@ startup tooling (python-dotenv is already a dependency):
 ```
 
 Existing process environment variables take precedence over `.env` values.
-Use one worker and loopback binding. There is no real authentication; CORS allows local frontend GET/POST requests and is not an authorization boundary.
+Use one worker and loopback binding. Research endpoints remain public; only /api/me verifies user identity. CORS allows local frontend GET/POST requests and is not an authorization boundary.
 The frontend research page uses the agent endpoint described below.
 Do not expose this endpoint publicly. This milestone was tested only with mocks.
 
@@ -408,7 +408,7 @@ curl --fail-with-body -i http://127.0.0.1:8000/api/research/agent \
 
 This sends a real request to Gemini but uses fictional market quotes. It was not
 run automatically. Keep loopback binding and one worker: there is no authentication
-or daily spending cap. CORS allows GET/POST and Content-Type for the two explicit local frontend origins.
+or daily spending cap. CORS allows GET/POST, Content-Type, and Authorization for the two explicit local frontend origins.
 Endpoint tests use mocks and require no key or `.env` loading. Live Gemini and
 market-provider behavior remain unverified.
 
@@ -719,3 +719,68 @@ curl --fail-with-body -i http://127.0.0.1:8000/api/research/agent \
 Mocked tests cover the actual SDK wire exchange, preserved signatures/correlation,
 selection validation, memoization and IDs, shared budgets/deadlines, API serialization,
 and quote compatibility. No live model/provider calls are part of validation.
+
+## Backend identity verification
+
+Only `GET /api/me` requires a user access token. All existing health, quote,
+history, and research routes remain public. Frontend integration is not part of
+this milestone; the account route guard does not authorize backend requests.
+
+Configure these backend-only variable names locally (placeholders shown):
+
+```dotenv
+SUPABASE_URL=https://your-project-ref.supabase.co
+SUPABASE_PUBLISHABLE_KEY=sb_publishable_REPLACE_WITH_YOUR_PUBLIC_KEY
+```
+
+Use the same hosted Supabase project as the frontend. Only HTTPS project origins
+`https://<project-ref>.supabase.co` (optional trailing slash) are accepted; custom
+domains, local Supabase, credentials, ports, query strings, and other paths are
+not supported here. Only publishable keys are accepted. Never use a secret or
+service-role key, database password, or signing secret. Missing/invalid settings
+leave public routes working. No environment file is loaded automatically.
+
+For later manual testing, after setting those variables in your local shell:
+
+```sh
+cd /Users/irvin/Documents/MarketSim/backend
+MARKET_DATA_PROVIDER=demo RESEARCH_ENABLED=false .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+Send the signed-in user's access token in exactly one `Authorization: Bearer`
+header to `/api/me` using a trusted local HTTP client. Do not paste tokens into
+chat, logs, URLs, or shell history. Scheme matching is case-insensitive. The
+entire ASCII header is limited to 8,192 characters; empty, duplicate, comma-joined,
+or malformed credentials are rejected. Query, cookie, and body tokens are never
+used. This endpoint does not refresh tokens or inspect unverified JWT claims.
+
+The reusable dependency calls the fixed `/auth/v1/user` endpoint with per-request
+`apikey` and `Authorization` headers. A separate lifespan-managed HTTPX client has
+no retries, redirects, or environment proxies, a two-second connection timeout,
+and a five-second overall deadline including response reading. Cancellation
+propagates. There is no token-result cache and no shared mutable auth header.
+
+| Result | HTTP response |
+| --- | --- |
+| Verified UUID from successful Auth response | 200, only `{"user_id":"<uuid>"}` |
+| Missing/malformed header or documented user credential rejection | 401, safe detail and `WWW-Authenticate: Bearer` |
+| Invalid/missing configuration or verification-service failure | 503, safe detail |
+
+Success and authentication errors include `Cache-Control: no-store`. Documented
+rejection codes are `bad_jwt`, `no_authorization`, `session_expired`,
+`session_not_found`, `user_banned`, and `user_not_found` on 4xx responses other
+than 429. Unknown errors, invalid JSON/user UUID, redirects, timeouts, 429, and
+5xx return 503; raw provider details are never exposed or logged. CORS additionally
+allows Authorization for the same two local origins; methods and cookie settings
+are unchanged.
+
+Official contracts consulted October 21, 2026:
+[Supabase JWT verification](https://supabase.com/docs/guides/auth/jwts) and
+[Auth error codes](https://supabase.com/docs/guides/auth/debugging/error-codes).
+Supabase owns cryptographic verification; this works without assuming the
+project's signing algorithm. Mocked rejections test our handling, not Supabase's
+cryptographic verification. Tests use mock transports and forbid live requests.
+Later manually check a real user UUID, absent/invalid credentials, and unchanged
+public routes. Logout must not be treated as guaranteed immediate access-token
+revocation: issued access tokens may remain usable until expiry. This milestone
+adds no ownership policy, database access, or authorization of existing routes.

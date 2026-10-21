@@ -4,11 +4,12 @@ from datetime import date
 from typing import Annotated
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
+from app.auth import Identity, IdentityVerifier, require_identity
 from app.gemini_client import configured_client
 from app.historical_data import HistoricalInput, HistoricalResult, get_history
 from app.market_data import MarketData, Quote, QuoteError
@@ -23,7 +24,11 @@ async def lifespan(app: FastAPI):
     for name in ('httpx', 'httpcore', 'google.genai', 'google.genai._api_client', 'google.genai.models'):
         logging.getLogger(name).disabled = True
     async with httpx.AsyncClient(timeout=httpx.Timeout(10.0), follow_redirects=False,
-                                 trust_env=False, limits=httpx.Limits(max_connections=3)) as client:
+                                 trust_env=False, limits=httpx.Limits(max_connections=3)) as client, httpx.AsyncClient(
+            timeout=httpx.Timeout(5.0, connect=2.0), follow_redirects=False, trust_env=False,
+            transport=httpx.AsyncHTTPTransport(retries=0, trust_env=False),
+    ) as auth_client:
+        app.state.identity = IdentityVerifier.configured(auth_client)
         service = MarketData(client)
         app.state.market_data = service
         model = configured_client()
@@ -44,9 +49,18 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=['http://localhost:5173', 'http://127.0.0.1:5173'],
     allow_methods=['GET', 'POST'],
-    allow_headers=['Content-Type'],
+    allow_headers=['Content-Type', 'Authorization'],
     allow_credentials=False,
 )
+
+
+@app.get('/api/me', response_model=Identity, responses={
+    401: {'description': 'Missing or rejected user credential'},
+    503: {'description': 'Identity verification unavailable'},
+})
+async def get_me(response: Response, identity: Annotated[Identity, Depends(require_identity)]) -> Identity:
+    response.headers['Cache-Control'] = 'no-store'
+    return identity
 
 
 @app.get('/health')
