@@ -241,8 +241,8 @@ outside the repository setting `envDir: false`, so no actual `.env` files were r
 The root `AuthProvider` supplies `useAuth()` with `loading`, `signed_out`,
 `signed_in` (session and user), or `unavailable`. This is UI state only, not backend
 authorization. Login/signup forms now call Supabase, with confirmation handling and
-a dashboard sign-out control. Demo routes and API clients remain public: no route
-protection or backend verification is implemented. No auth error banner is added
+a dashboard sign-out control. Demo routes and API clients remain public: no
+backend verification is implemented; `/account` now has frontend route protection. No auth error banner is added
 to demo pages.
 
 Optional public configuration names are `VITE_SUPABASE_URL` and
@@ -392,3 +392,38 @@ hooks/router/SDK responses; they are handler-level interaction tests, not mounte
 React DOM/browser tests. Helper and static HTML checks remain separate. Manually
 verify replacement navigation/Back behavior, screen-reader sign-out feedback,
 notice clearing on a new attempt, and staying on the dashboard after failed logout.
+
+
+## Protected account page
+
+`/account` is the first frontend-only protected route. `RequireAuth` uses the
+existing provider: loading renders a polite status without redirecting or mounting
+account content; signed-out state replaces the route with `/login`; unavailable
+state renders safe login/demo links without a redirect loop. Signed-in state renders
+the account page. Every auth state change re-evaluates the guard, withholding the
+account page on session loss or sign-out. It never caches a previous user's details.
+
+The page displays the email as escaped React text, never tokens or session objects.
+Watchlists, saved research and portfolios are explicitly not connected. It links
+back to the public demo dashboard, which shows an Account link only when signed in.
+The existing dashboard, research and stock-history routes remain public and fictional
+labels are unchanged. Existing dashboard sign-out and its login success notice remain.
+
+A guard redirect sets router state `returnTo: '/account'`. Successful password
+login returns there with replacement only for that exact string; missing, external,
+encoded, query/fragment-bearing or other destinations fall back to `/dashboard`.
+Ordinary login still goes to `/dashboard`. Signup/confirmation behavior is unchanged.
+
+This guard is UI behavior, not backend authorization. Browser sessions can be
+modified, and public APIs remain directly callable. Future private endpoints must
+independently verify tokens and enforce ownership. No database or profile records,
+new dependencies, backend changes, or persistence changes are included.
+
+Validation uses mocked SDK/auth state and the existing environment-isolated build.
+Account tests statically render actual components and check redirect intent, loading,
+unavailable state, escaped email, and subsequent renders after session loss. Login
+return tests execute component handlers with mocked hooks/router. These are not
+mounted React DOM/browser tests. Manually check direct signed-out `/account` access,
+login return and Back behavior, refresh while session initialization is pending,
+unavailable configuration, session loss, email wrapping, keyboard focus, and continued
+anonymous access to `/dashboard`, `/research`, and `/stocks/AAPL`.

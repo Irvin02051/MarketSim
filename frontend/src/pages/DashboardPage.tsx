@@ -56,6 +56,7 @@ export default function DashboardPage() {
           </Link>
           <nav className="dashboard-navigation" aria-label="Dashboard navigation">
             <Link className="dashboard-back-link" to="/research">Stock research</Link>
+            {auth.status === 'signed_in' && <Link className="dashboard-back-link" to="/account">Account</Link>}
             <span className="dashboard-demo-badge">Demo mode</span>
             {auth.status === 'signed_in' && <button className="dashboard-back-link dashboard-signout" type="button" disabled={busy} onClick={signOut}>{busy ? 'Signing out…' : 'Sign out'}</button>}
             <Link className="dashboard-back-link" to="/login">Back to login <span aria-hidden="true">↗</span></Link>

@@ -157,6 +157,7 @@ test('rendered dashboard exposes sign-out only to signed-in users and keeps demo
     const Dashboard = component('../src/pages/DashboardPage.tsx', { status })
     const html = renderToStaticMarkup(createElement(Dashboard))
     assert.equal(html.includes('>Sign out</button>'), status === 'signed_in')
+    assert.equal(html.includes('href="/account"'), status === 'signed_in')
     assert.match(html, /Back to login/)
     assert.match(html, /Demo mode/)
     assert.match(html, /not personal account data/)
@@ -272,6 +273,18 @@ test('sign-out handler navigates with success state only after SDK success', asy
     } else {
       assert.deepEqual(h.navigations, [{ to: '/login', options: { replace: true, state: { signedOut: true } } }])
     }
+    h.unmount()
+  }
+})
+
+test('post-login return allows only exact account destination; everything else uses dashboard', async () => {
+  for (const returnTo of ['/account', 'https://evil.test', '//evil.test', '/research', '/account?next=evil',
+    '/account#fragment', '/ACCOUNT', '/%61ccount', { pathname: '/account' }, null, undefined]) {
+    const h = handlers('../src/components/AuthForm.tsx', 'signed_out', { signInWithPassword: async () => success }, { returnTo })
+    h.field('email').props.onChange('person@example.test')
+    h.field('password').props.onChange('synthetic-password')
+    h.render(); h.submit(); await settle()
+    assert.deepEqual(h.navigations, [{ to: returnTo === '/account' ? '/account' : '/dashboard', options: { replace: true } }])
     h.unmount()
   }
 })

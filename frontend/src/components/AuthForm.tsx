@@ -69,7 +69,7 @@ export default function AuthForm({ mode }: { mode: 'login' | 'signup' }) {
       const result = await pending
       if (mounted.current) {
         setOutcome(result); setBusy(false)
-        if (mode === 'login' && result === 'signed_in') navigate('/dashboard', { replace: true })
+        if (mode === 'login' && result === 'signed_in') navigate(location.state?.returnTo === '/account' ? '/account' : '/dashboard', { replace: true })
       }
       return result
     })
