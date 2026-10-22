@@ -41,7 +41,7 @@ class ApiTests(unittest.TestCase):
         response = self.client.options('/api/stocks/AAPL/quote', headers={
             'Origin': 'http://localhost:5173', 'Access-Control-Request-Method': 'GET',
         })
-        self.assertEqual(response.headers['access-control-allow-methods'], 'GET, POST')
+        self.assertEqual(response.headers['access-control-allow-methods'], 'GET, POST, DELETE')
         self.assertEqual(self.client.get('/docs').status_code, 200)
         self.assertIn('/api/stocks/{symbol}/quote', self.client.get('/openapi.json').json()['paths'])
 
@@ -56,7 +56,7 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(response.headers.get('access-control-allow-origin'), origin if allowed else None)
             self.assertNotIn('access-control-allow-credentials', response.headers)
             self.assertIn('content-type', response.headers['access-control-allow-headers'].lower())
-        for method, header in [('DELETE', 'content-type'), ('POST', 'x-unapproved-header')]:
+        for method, header in [('PATCH', 'content-type'), ('POST', 'x-unapproved-header')]:
             response = self.client.options('/api/research/agent', headers={
                 'Origin': 'http://localhost:5173', 'Access-Control-Request-Method': method,
                 'Access-Control-Request-Headers': header,
