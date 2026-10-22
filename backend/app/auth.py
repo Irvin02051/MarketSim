@@ -7,7 +7,7 @@ from uuid import UUID
 
 import httpx
 from fastapi import HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, SecretStr
 
 MAX_CREDENTIAL_LENGTH = 8192  # Entire Authorization header, in ASCII characters.
 VERIFICATION_DEADLINE = 5.0
@@ -19,6 +19,17 @@ REJECTED_CODES = frozenset({
 
 class Identity(BaseModel):
     user_id: UUID
+
+
+class VerifiedContext(Identity):
+    token: SecretStr = Field(exclude=True, repr=False)
+
+
+def project_configuration(url: str, key: str) -> tuple[str, str] | None:
+    if (re.fullmatch(r'https://[a-z0-9]+\.supabase\.co/?', url)
+            and re.fullmatch(r'sb_publishable_[A-Za-z0-9_-]+', key)):
+        return url.rstrip('/'), key
+    return None
 
 
 def auth_error(status: int) -> HTTPException:
@@ -44,10 +55,9 @@ class IdentityVerifier:
     def __init__(self, client: httpx.AsyncClient, url: str, key: str):
         self.client = client
         # Deliberately hosted-project only; custom domains/local Auth are out of scope.
-        valid_url = re.fullmatch(r'https://[a-z0-9]+\.supabase\.co/?', url)
-        valid_key = re.fullmatch(r'sb_publishable_[A-Za-z0-9_-]+', key)
-        self.endpoint = url.rstrip('/') + '/auth/v1/user' if valid_url and valid_key else None
-        self._key = key if self.endpoint else ''
+        config = project_configuration(url, key)
+        self.endpoint = config[0] + '/auth/v1/user' if config else None
+        self._key = config[1] if config else ''
 
     @classmethod
     def configured(cls, client: httpx.AsyncClient) -> 'IdentityVerifier':
@@ -86,3 +96,9 @@ class IdentityVerifier:
 async def require_identity(request: Request) -> Identity:
     token = bearer_token(request.headers.getlist('authorization'))
     return await request.app.state.identity.verify(token)
+
+
+async def require_context(request: Request) -> VerifiedContext:
+    token = bearer_token(request.headers.getlist('authorization'))
+    identity = await request.app.state.identity.verify(token)
+    return VerifiedContext(user_id=identity.user_id, token=SecretStr(token))

@@ -182,7 +182,7 @@ startup tooling (python-dotenv is already a dependency):
 ```
 
 Existing process environment variables take precedence over `.env` values.
-Use one worker and loopback binding. Research endpoints remain public; only /api/me verifies user identity. CORS allows local frontend GET/POST requests and is not an authorization boundary.
+Use one worker and loopback binding. Research endpoints remain public; /api/me and watchlist routes verify user identity. CORS allows local frontend GET/POST requests and is not an authorization boundary.
 The frontend research page uses the agent endpoint described below.
 Do not expose this endpoint publicly. This milestone was tested only with mocks.
 
@@ -722,7 +722,7 @@ and quote compatibility. No live model/provider calls are part of validation.
 
 ## Backend identity verification
 
-Only `GET /api/me` requires a user access token. All existing health, quote,
+`GET /api/me` and the watchlist routes below require a user access token. All existing health, quote,
 history, and research routes remain public. Frontend integration is not part of
 this milestone; the account route guard does not authorize backend requests.
 
@@ -784,3 +784,76 @@ Later manually check a real user UUID, absent/invalid credentials, and unchanged
 public routes. Logout must not be treated as guaranteed immediate access-token
 revocation: issued access tokens may remain usable until expiry. This milestone
 adds no ownership policy, database access, or authorization of existing routes.
+
+## Authenticated personal watchlist API
+
+These routes use the existing SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY settings
+and require one user Bearer token under the same validation rules as `/api/me`.
+They do not change the public quote/history/research routes or the frontend's
+fictional sample watchlist. There is no frontend or agent integration yet.
+
+| Request | Success |
+| --- | --- |
+| GET /api/watchlist | 200 `{"items":[{"symbol":"AAPL","created_at":"2026-10-22T12:00:00Z"}]}`; sorted by symbol, empty list allowed |
+| POST /api/watchlist with `{"symbol":" aapl "}` | 201 `{"symbol":"AAPL","created_at":"..."}` |
+| DELETE /api/watchlist/AAPL | Empty 204, whether present or already absent |
+
+The example timestamp is illustrative. Input is trimmed/normalized using the
+existing symbol validator and restricted to AAPL/MSFT/NVDA. Extra POST fields,
+including user_id, are rejected. Every request verifies identity through Auth.
+The request-local context holds the verified UUID and original token; the token
+uses SecretStr, is omitted from repr/serialization, and is never a response field.
+`/api/me` retains its UUID-only response and existing verification behavior.
+
+The Data API uses a separate lifespan-managed HTTPX client with at most three
+connections, no environment proxies, redirects, or automatic retries. Headers
+are set per request; no token is stored in shared defaults. A fixed validated
+project URL determines `/rest/v1/watchlist_items`. GET/DELETE carry structured
+owner filters and DELETE also filters the symbol. POST supplies the verified
+owner explicitly, never a client-provided owner. Normal INSERT is used with
+`return=representation, missing=default`, not upsert: duplicate saves cannot
+update the original timestamp. DELETE requests a representation internally to
+validate any returned owner/symbol before discarding it and returning 204.
+
+Returned rows must have the expected UUID owner, supported canonical symbols,
+and timezone-aware timestamps. Duplicates, mismatched write symbols, invalid
+shapes/cardinality, and malformed data become safe service errors. Only symbol
+and created_at are exposed. Database RLS remains authoritative and unchanged.
+There is no watchlist or token-result cache.
+
+A route-specific ten-second total deadline includes request processing, identity
+verification, database access, and body reading. Auth still has its existing
+five-second inner limit. Cancellation propagates to outstanding work. A timed-out
+write may have completed: refresh the list before deciding whether to retry.
+
+All handled watchlist responses, including validation errors, use
+`Cache-Control: no-store`. Error details never echo input or upstream bodies:
+
+- 422: invalid input.
+- 401 with `WWW-Authenticate: Bearer`: missing/rejected credentials, including
+  recognized Data API JWT errors PGRST301/PGRST302/PGRST303.
+- 409: POST uniqueness violation 23505 (already saved).
+- 403: recognized insufficient-privilege error 42501.
+- 503: unavailable configuration/schema, timeout, transport/rate-limit/server
+  failure, unrecognized upstream errors, redirects, or malformed results.
+
+CORS now permits DELETE as well as GET/POST for the same two localhost origins;
+Authorization/Content-Type and disabled cookie credentials are unchanged.
+
+Official PostgREST documentation consulted October 22, 2026:
+[table requests](https://docs.postgrest.org/en/stable/references/api/tables_views.html),
+[response preferences](https://docs.postgrest.org/en/stable/references/api/preferences.html),
+and [error codes](https://docs.postgrest.org/en/stable/references/errors.html).
+
+Validation uses mocked Auth/Data API HTTPX transports and network guards. It
+checks request ownership/headers, concurrent users, validation/error mapping,
+response schemas, cancellation, the combined deadline, no write retries, cleanup,
+CORS and existing route regressions. These mocks do not prove live Data API
+integration or replace the real PostgreSQL/RLS tests under supabase/tests.
+
+Before a later live integration check, separately review hosted migration
+application, exposed schema and explicit table grants/RLS. No migration is
+applied by this application. Then check two synthetic accounts through list/add/
+duplicate/delete, confirm independent ownership, and ensure timestamps survive a
+duplicate add. Never use administrative credentials or copy tokens into logs.
+This milestone made no live requests and did not access or modify the hosted project.

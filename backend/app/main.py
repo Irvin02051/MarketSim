@@ -16,6 +16,8 @@ from app.market_data import MarketData, Quote, QuoteError
 from app.research_agent import AgentInput, AgentResult, ResearchAgent
 from app.research_explanation import ResearchExplanation, ResearchInput, ResearchResult
 from app.research_explanation import explanation as research_outcome
+from app.watchlist import WatchlistService
+from app.watchlist import router as watchlist_router
 
 
 @asynccontextmanager
@@ -27,7 +29,12 @@ async def lifespan(app: FastAPI):
                                  trust_env=False, limits=httpx.Limits(max_connections=3)) as client, httpx.AsyncClient(
             timeout=httpx.Timeout(5.0, connect=2.0), follow_redirects=False, trust_env=False,
             transport=httpx.AsyncHTTPTransport(retries=0, trust_env=False),
-    ) as auth_client:
+    ) as auth_client, httpx.AsyncClient(
+            timeout=httpx.Timeout(10.0, connect=2.0), follow_redirects=False, trust_env=False,
+            transport=httpx.AsyncHTTPTransport(retries=0, trust_env=False,
+                                             limits=httpx.Limits(max_connections=3)),
+    ) as data_client:
+        app.state.watchlist = WatchlistService.configured(data_client)
         app.state.identity = IdentityVerifier.configured(auth_client)
         service = MarketData(client)
         app.state.market_data = service
@@ -48,10 +55,12 @@ app = FastAPI(title='MarketSim API', lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=['http://localhost:5173', 'http://127.0.0.1:5173'],
-    allow_methods=['GET', 'POST'],
+    allow_methods=['GET', 'POST', 'DELETE'],
     allow_headers=['Content-Type', 'Authorization'],
     allow_credentials=False,
 )
+
+app.include_router(watchlist_router)
 
 
 @app.get('/api/me', response_model=Identity, responses={
