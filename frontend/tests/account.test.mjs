@@ -6,6 +6,7 @@ import { runInNewContext } from 'node:vm'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import ts from 'typescript'
+import * as identity from '../src/lib/identity.ts'
 
 // Real component static renders with mocked auth/router. Not mounted DOM tests.
 const require = createRequire(import.meta.url)
@@ -24,7 +25,9 @@ function setup() {
     const { outputText } = ts.transpileModule(readFileSync(new URL(path, import.meta.url), 'utf8'), {
       compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
     })
-    runInNewContext(outputText, { exports: output.exports, require: (name) => {
+    runInNewContext(outputText.replaceAll('import.meta.env.VITE_API_BASE_URL', '"http://localhost:8000"'), { exports: output.exports, require: (name) => {
+      if (name === '../lib/identity') return identity
+      if (name === '../lib/auth') return { getBrowserAuthClient: () => { throw new Error('No automatic session requests') } }
       if (name.endsWith('/authContext')) return { useAuth: () => state }
       if (name === 'react-router-dom') return router
       if (name.endsWith('.css')) return {}
@@ -76,6 +79,9 @@ test('unavailable guard has safe accessible fallback links and never redirects',
 test('signed-in account escapes email and exposes no session tokens', () => {
   const { html, redirects } = setup().render(signedIn)
   assert.match(html, /Your account/)
+  assert.match(html, /Verify backend identity/)
+  assert.match(html, /role="status"/)
+  assert.match(html, /No backend identity check has been performed/)
   assert.match(html, /&lt;script&gt;person@example.test&lt;\/script&gt;/)
   assert.match(html, /not yet connected to this account/)
   assert.match(html, /href="\/dashboard"/)
