@@ -1,0 +1,34 @@
+# Isolated, disposable database tests; never linked to the hosted project.
+project_id = "marketsim-watchlist-tests"
+
+[db]
+port = 55432
+shadow_port = 55430
+major_version = 17
+
+[db.seed]
+enabled = false
+
+[api]
+enabled = false
+
+[auth]
+enabled = false
+
+[studio]
+enabled = false
+
+[local_smtp]
+enabled = false
+
+[storage]
+enabled = false
+
+[realtime]
+enabled = false
+
+[analytics]
+enabled = false
+
+[edge_runtime]
+enabled = false
