@@ -9,7 +9,7 @@ export default function RequireAuth({ children }: { children: ReactNode }) {
   const location = useLocation()
   if (auth.status === 'signed_in') return children
   if (auth.status === 'signed_out') {
-    return <Navigate to="/login" replace state={location.pathname === '/account' ? { returnTo: '/account' } : null} />
+    return <Navigate to="/login" replace state={(location.pathname === '/account' || location.pathname === '/watchlist') ? { returnTo: location.pathname } : null} />
   }
   return <div className="dashboard-page"><main className="dashboard-main">
     <h1>Account access</h1>

@@ -1,0 +1,13 @@
+.watchlist-navigation { display: flex; flex-wrap: wrap; gap: 24px; margin-block: 20px; }
+.personal-watchlist { max-width: 760px; margin-top: 24px; padding: 24px; border: 1px solid #dde5e8; border-radius: 13px; background: white; }
+.personal-watchlist form { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; }
+.personal-watchlist button, .personal-watchlist select { min-height: 44px; max-width: 100%; padding: 10px 16px; border: 1px solid #92b7a5; border-radius: 7px; background: #eaf5ef; color: #1b6148; font: inherit; }
+.personal-watchlist button { cursor: pointer; }
+.personal-watchlist button:hover:not(:disabled) { background: #d9eee2; }
+.personal-watchlist :disabled { opacity: .65; cursor: not-allowed; }
+.personal-watchlist [role="alert"] { color: #973239; }
+.personal-watchlist ul { list-style: none; margin: 20px 0 0; padding: 0; }
+.personal-watchlist li { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; justify-content: space-between; padding-block: 18px; border-top: 1px solid #dde5e8; }
+.personal-watchlist li p { margin: 8px 0 0; font-size: 13px; color: #5e6e7b; }
+.personal-watchlist a, .watchlist-navigation a { color: #146548; }
+@media (max-width: 480px) { .personal-watchlist { padding: 18px; } .personal-watchlist form label { width: 100%; } }
