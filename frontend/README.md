@@ -406,13 +406,13 @@ the account page. Every auth state change re-evaluates the guard, withholding th
 account page on session loss or sign-out. It never caches a previous user's details.
 
 The page displays the email as escaped React text, never tokens or session objects.
-Watchlists, saved research and portfolios are explicitly not connected. It links
+Saved research and portfolios are not connected; personal saved symbols are now available at `/watchlist`. It links
 back to the public demo dashboard, which shows an Account link only when signed in.
 The existing dashboard, research and stock-history routes remain public and fictional
 labels are unchanged. Existing dashboard sign-out and its login success notice remain.
 
-A guard redirect sets router state `returnTo: '/account'`. Successful password
-login returns there with replacement only for that exact string; missing, external,
+A guard redirect preserves exactly `/account` or `/watchlist` in router state `returnTo`. Successful password
+login returns there with replacement only for those exact strings; missing, external,
 encoded, query/fragment-bearing or other destinations fall back to `/dashboard`.
 Ordinary login still goes to `/dashboard`. Signup/confirmation behavior is unchanged.
 
@@ -473,3 +473,72 @@ Tests mock session access and fetch, exercise the actual helper and cancellation
 submission controller, and statically render the account page. They are not mounted
 browser tests. Real Supabase verification, CORS, and browser interactions still
 require the manual check. Use the environment-isolated build procedure above.
+
+
+## Personal watchlist
+
+`/watchlist` is protected by the existing session guard and linked as **My watchlist**
+from Account and the signed-in dashboard. The dashboard's fictional sample watchlist
+is unchanged. Saved symbols are not holdings or recommendations. Stock links open
+the existing fictional historical charts. Creation dates display in UTC.
+
+Use the existing frontend Supabase public configuration and `VITE_API_BASE_URL`;
+no new settings or keys are needed. The backend must use the same personal Supabase
+project and its publishable key, with the reviewed watchlist migration deployed,
+Data API enabled and public exposed. Never use administrative credentials in React.
+The backend remains responsible for identity verification and database RLS for ownership.
+
+The page loads once per authenticated mount and supports explicit Refresh/retry,
+Add AAPL/MSFT/NVDA, and Remove. Each operation obtains a current SDK session and sends
+only its access token in Authorization, never a user_id or a token in a URL/body.
+The helper reuses the identity helper's trusted backend URL validation: HTTPS except
+explicit loopback development hosts. Requests omit cookies, reject redirects, and
+use no-store. A 12-second total deadline includes session lookup, fetch and body reading,
+slightly longer than the backend's ten-second deadline. DELETE 204 is not parsed as JSON.
+Responses validate supported symbols, unique list entries, and timezone-aware timestamps.
+
+One synchronous gate serializes reads and writes; no polling or automatic write retries
+are used. Confirmed mutations update the list. POST 409 says already saved and requests
+an explicit refresh. A timed-out or otherwise uncertain write may have completed;
+further mutations remain blocked until Refresh succeeds. Refresh failures preserve that
+warning. Authentication, permission, configuration, malformed-response, network and service
+failures have safe feedback; they never trigger automatic global sign-out.
+
+Per-user keyed content and cleanup remove old rows on identity changes. Synchronous SDK
+subscriptions cancel pending work on sign-out/account changes, preventing a delayed session
+lookup from sending an old token. Cleanup aborts work and unsubscribes; Strict Mode effect
+replay creates a fresh controller. Requests already sent before cancellation cannot be
+undone; the next mount reloads server state. SessionStorage and SDK refresh remain unchanged.
+
+Tests use mocked session/fetch calls, controller lifecycle tests, actual static React HTML,
+and existing login handler tests with mocked hooks/router. They do not mount a browser DOM
+or prove live Data API integration. Run `npm test`, `npm run lint`, and the fail-fast,
+environment-isolated production build documented above. No live requests are part of tests.
+
+### Manual personal-watchlist checks (not run automatically)
+
+1. Use the existing local frontend configuration for personal project
+   `qptlizibcvoswotrdhrh` and `VITE_API_BASE_URL=http://127.0.0.1:8000`. Keep the backend
+   configured for that same project using its publishable key. Stop any old backend;
+   from `backend/`, start it with
+   `MARKET_DATA_PROVIDER=demo RESEARCH_ENABLED=false .venv/bin/python -m uvicorn app.main:app --env-file .env --host 127.0.0.1 --port 8000`.
+   From `frontend/`, run `npm run dev -- --host 127.0.0.1 --port 5173 --strictPort`.
+   These are manual commands only; automated validation never loads environment files.
+2. Signed out, visit `http://127.0.0.1:5173/watchlist`. Log in through the existing form;
+   confirm return to `/watchlist` and replacement navigation. Normal login still opens
+   `/dashboard`; `/account` return and public demo routes still work.
+3. With an existing test account, confirm empty state if nothing is saved. Add AAPL,
+   Refresh and reload to confirm persistence. Add AAPL again for friendly duplicate
+   feedback, Refresh, remove it, and reload to confirm removal persists. Follow a stock
+   link and verify that the chart is clearly fictional.
+4. Using two existing test accounts, verify separate saved items; each can independently
+   save AAPL. Sign out through the dashboard between accounts. Confirm previous account
+   rows never flash on the new account, including with network throttling and a pending
+   request. Do not copy tokens or headers into chat, shell commands, or logs.
+5. Stop the backend and test safe failure and explicit retry after restarting. For an
+   uncertain mutation, confirm the warning and that changes stay disabled until a
+   successful Refresh. A lost response can leave a completed write: inspect the refreshed
+   list before repeating it. Use browser mocks/throttling to exercise this reliably.
+6. Check Tab/Enter operation, visible focus, loading and error announcements, per-symbol
+   Remove labels, and a narrow mobile layout. Verify Account/My watchlist navigation and
+   that the dashboard sample list remains fictional and separate.

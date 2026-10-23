@@ -277,14 +277,14 @@ test('sign-out handler navigates with success state only after SDK success', asy
   }
 })
 
-test('post-login return allows only exact account destination; everything else uses dashboard', async () => {
-  for (const returnTo of ['/account', 'https://evil.test', '//evil.test', '/research', '/account?next=evil',
+test('post-login return allows only exact account and watchlist destinations; everything else uses dashboard', async () => {
+  for (const returnTo of ['/account', '/watchlist', '/watchlist?next=evil', '/watchlist/', '/WATCHLIST', '/%77atchlist', 'https://evil.test', '//evil.test', '/research', '/account?next=evil',
     '/account#fragment', '/ACCOUNT', '/%61ccount', { pathname: '/account' }, null, undefined]) {
     const h = handlers('../src/components/AuthForm.tsx', 'signed_out', { signInWithPassword: async () => success }, { returnTo })
     h.field('email').props.onChange('person@example.test')
     h.field('password').props.onChange('synthetic-password')
     h.render(); h.submit(); await settle()
-    assert.deepEqual(h.navigations, [{ to: returnTo === '/account' ? '/account' : '/dashboard', options: { replace: true } }])
+    assert.deepEqual(h.navigations, [{ to: (returnTo === '/account' || returnTo === '/watchlist') ? returnTo : '/dashboard', options: { replace: true } }])
     h.unmount()
   }
 })

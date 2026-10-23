@@ -42,7 +42,8 @@ export default function AccountPage() {
       <p>Signed in as: {auth.user.email || 'Email unavailable'}</p>
     </div>
     <IdentityCheck key={auth.user.id} userId={auth.user.id} />
-    <p>Watchlists, saved research, and portfolios are not yet connected to this account.</p>
+    <p>Saved research and portfolios are not yet connected to this account.</p>
+    <p><Link to="/watchlist">My watchlist</Link> — save supported symbols to your account.</p>
     <p>The demo dashboard remains public and shows fictional data, not your account balances.</p>
     <p><Link to="/dashboard">Back to demo dashboard</Link></p>
   </main></div>

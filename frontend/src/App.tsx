@@ -1,5 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import RequireAuth from './auth/RequireAuth'
+import WatchlistPage from './pages/WatchlistPage'
 import AccountPage from './pages/AccountPage'
 import AuthCallbackPage from './pages/AuthCallbackPage'
 import LoginPage from './pages/LoginPage'
@@ -13,6 +14,7 @@ export default function App() {
     <Route path="/auth/callback" element={<AuthCallbackPage />} />
     <Route path="/login" element={<LoginPage />} />
     <Route path="/signup" element={<SignupPage />} />
+    <Route path="/watchlist" element={<RequireAuth><WatchlistPage /></RequireAuth>} />
     <Route path="/account" element={<RequireAuth><AccountPage /></RequireAuth>} />
     <Route path="/dashboard" element={<DashboardPage />} />
     <Route path="/research" element={<ResearchPage />} />
