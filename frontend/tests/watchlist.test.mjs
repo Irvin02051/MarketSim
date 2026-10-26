@@ -150,6 +150,7 @@ function component(path, state, pathname = '/watchlist') {
   runInNewContext(code, { exports: output.exports, require: name => {
     if (name.endsWith('/authContext')) return { useAuth: () => state }
     if (name === '../lib/watchlist') return watchlist
+    if (name === '../components/WatchlistQuote') return { __esModule: true, default: ({ symbol }) => createElement('p', { role: 'alert' }, `${symbol} quote unavailable (mock)`) }
     if (name === '../lib/auth') return { getBrowserAuthClient: () => assert.fail('No SSR request') }
     if (name.endsWith('.css')) return {}
     if (name === 'react-router-dom') return {
@@ -180,6 +181,7 @@ test('static page has labeled controls, empty/loading/error states, dates, and f
   const empty = render({ ...initialState, loaded: true })
   assert.match(empty, /No symbols saved/); assert.match(empty, /label for="watchlist-symbol"/); assert.match(empty, />Add<\/button>/)
   const full = render({ ...initialState, loaded: true, items: [row()] })
+  assert.match(full, /AAPL quote unavailable/); assert.doesNotMatch(full, /<button[^>]*disabled[^>]*aria-label="Remove/); assert.match(full, /membership only/)
   assert.match(full, /href="\/stocks\/AAPL"/); assert.match(full, /Remove AAPL from my watchlist/); assert.match(full, /2026-10-23/)
   assert.match(render({ ...initialState, code: 'authentication' }), /Log in again/)
   assert.match(render({ ...initialState, code: 'unavailable' }), /role="alert"/)

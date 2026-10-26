@@ -542,3 +542,77 @@ environment-isolated production build documented above. No live requests are par
 6. Check Tab/Enter operation, visible focus, loading and error announcements, per-symbol
    Remove labels, and a narrow mobile layout. Verify Account/My watchlist navigation and
    that the dashboard sample list remains fictional and separate.
+
+## Quotes on the personal watchlist
+
+Each saved symbol mounts its own quote panel after membership loads. A confirmed Add
+mounts the new symbol's panel; unrelated renders and changes to other symbols keep
+existing panels mounted without refetching. **Refresh saved symbols** reloads membership
+only. Use **Refresh quote** (or **Retry quote**) on an individual item to request its
+quote again. There is no polling, automatic retry, or persistent frontend quote cache.
+Leaving the page or switching accounts discards the component's displayed quotes.
+
+Quotes come only from the public backend `GET /api/stocks/{symbol}/quote`, using the
+existing `VITE_API_BASE_URL` and trusted HTTPS/explicit-loopback URL validation.
+Quote requests contain no user token, cookies, or provider key, reject redirects,
+and use no-store. A twelve-second total deadline includes response-body reading.
+Each panel permits only one active request; removal, unmount, or account replacement
+aborts it and ignores late completion. Strict Mode cleanup/replay cancels the first
+request and creates a fresh controller. Already-sent public requests may still finish
+on the backend, which shares in-flight provider work between callers.
+
+The full quote contract is checked: matching supported symbol, USD currency, finite
+numbers, positive ordered low/price/high, integer nonnegative volume, real dates,
+timezone-aware fetch time, boolean cache flag, and recognized provenance pairs.
+Volumes beyond JavaScript's safe integer range are rejected rather than rounded.
+`change_percent=2.5` displays as `+2.5%`, not 250%; changes carry explicit signs and
+zero remains zero. Error/missing values are never replaced with zero or demo data.
+
+Demo responses prominently say **Fictional demo quote**. Provider responses say
+**Provider quote — end-of-day data**, not live or real-time. The trading date and
+backend fetch timestamp are separately labeled: fetch time does not establish market
+freshness. Standalone demo quotes and fictional historical chart fixtures are separate
+and need not reconcile. Saved symbols are not holdings or trading recommendations.
+
+The existing backend caches successful quotes for six hours per process and shares
+concurrent requests for a symbol. Its live-provider attempt budget is twenty per rolling
+24 hours per process; failed attempts count. Refresh can therefore return a cached
+quote with its original fetch timestamp. The UI displays the backend cache-hit flag
+and does not bypass that cache or change provider behavior.
+
+Quote failures, including rate limits, affect only the corresponding panel. Membership,
+Remove, and other symbols' successful quotes remain usable. Refresh clears old quote
+values before requesting again; a refresh failure shows a safe error and explicit Retry,
+not previously fetched numbers. Saved-symbol persistence, authentication, uncertain-write
+recovery, historical links, and the dashboard's fictional sample watchlist are unchanged.
+
+### Manual quote checks
+
+1. Use the existing personal-watchlist setup above, restarting the backend with
+   `MARKET_DATA_PROVIDER=demo RESEARCH_ENABLED=false` while retaining its existing
+   Supabase configuration. Start the frontend as documented and log in normally;
+   no copying tokens is necessary. Save AAPL, MSFT, and NVDA on `/watchlist`.
+2. Confirm all three show fictional labels, reported USD prices and signed daily
+   amount/percentage changes, a trading date, source, and a separately labeled backend
+   fetch timestamp. AAPL's fixture change is +2.5%, MSFT's is -1%, and NVDA's is +10%.
+3. Refresh one quote; cached data is allowed and may retain its fetch timestamp.
+   Refresh saved symbols and confirm unchanged symbols do not refetch quotes. Add/remove
+   symbols, reload the page, and switch between existing accounts; verify saved membership
+   and that previous account panels disappear. Chart links must retain fictional-history
+   labels. Under throttling, remove a pending item or sign out and check for stale flashes.
+4. For a real local outage check, stop the backend after membership loads, refresh a quote,
+   and verify safe error/retry. Restart and retry. Removal cannot succeed during a backend
+   outage, but a quote failure must not itself disable the Remove control.
+5. Separately use browser request mocks to fail only one quote (429, 502/503, malformed
+   response, or a stalled body). Verify other panels still display, saved membership stays,
+   and Remove remains enabled unless a membership operation itself is busy or uncertain.
+   These partial-failure scenarios are mocked, not live-provider verification.
+6. Check keyboard access, visible focus, status/error announcements, per-symbol refresh
+   labels, and 320px layout. No provider request is needed to verify the demo presentation.
+
+Automated quote tests use mocked fetches, parser/controller tests, static React HTML,
+and a mocked-hook effect harness for cleanup/replay and unchanged-symbol renders.
+Watchlist static tests inject a quote error while asserting membership and Remove remain.
+These are not mounted browser interaction tests and do not establish live-provider
+freshness or browser accessibility. Use the existing fail-fast environment-isolated
+build procedure; actual environment files are not loaded during automated validation.
