@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
+import WatchlistQuote from '../components/WatchlistQuote'
 import { useAuth } from '../auth/authContext'
 import { getBrowserAuthClient } from '../lib/auth'
 import { createWatchlist, initialState, messages, requestWatchlist, symbols } from '../lib/watchlist'
@@ -20,9 +21,10 @@ export function WatchlistView({ state, selected, select, execute }: {
       </select>
       <button type="submit" disabled={locked}>{state.busy === 'POST' ? 'Adding…' : 'Add'}</button>
       <button type="button" disabled={!!state.busy} onClick={() => execute({ method: 'GET' })}>
-        {state.busy === 'GET' ? 'Loading…' : state.code ? 'Refresh / retry' : 'Refresh'}
+        {state.busy === 'GET' ? 'Loading…' : state.code ? 'Refresh saved symbols / retry' : 'Refresh saved symbols'}
       </button>
     </form>
+    <p>Refresh saved symbols reloads membership only. Use each quote’s refresh button to update its quote.</p>
     <div role="status" aria-live="polite" aria-atomic="true">
       {state.busy === 'GET' ? 'Loading your watchlist…' : state.busy === 'DELETE' ? 'Removing symbol…'
         : state.busy === 'POST' ? 'Saving symbol…' : state.notice}
@@ -36,6 +38,7 @@ export function WatchlistView({ state, selected, select, execute }: {
           <p>Saved <time dateTime={row.created_at}>{new Date(row.created_at).toISOString().slice(0, 10)} (UTC)</time></p></div>
         <button type="button" disabled={locked} aria-label={`Remove ${row.symbol} from my watchlist`}
           onClick={() => execute({ method: 'DELETE', symbol: row.symbol })}>Remove</button>
+        <WatchlistQuote symbol={row.symbol} />
       </li>)}
     </ul>}
   </section>
