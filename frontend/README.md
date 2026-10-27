@@ -616,3 +616,78 @@ Watchlist static tests inject a quote error while asserting membership and Remov
 These are not mounted browser interaction tests and do not establish live-provider
 freshness or browser accessibility. Use the existing fail-fast environment-isolated
 build procedure; actual environment files are not loaded during automated validation.
+
+## Confirmed save from research
+
+Research results now offer one **Save an analyzed stock** panel below the evidence.
+Choices come only from the validated quote evidence's symbol and historical evidence's
+provenance symbol, deduplicated in AAPL/MSFT/NVDA order. Questions, model prose, errors,
+and tool arguments never supply choices. Valid evidence remains eligible even when
+explanation generation failed or historical observations/metrics were unavailable;
+the panel retains fictional, empty-history, partial-coverage and unavailable-analysis
+notices. Saving a symbol is not a trade, recommendation, or claim of complete analysis.
+
+Select a symbol, choose **Review save**, then explicitly choose **Confirm add**.
+Result arrival, selection, Review and Cancel cause no write and no membership fetch.
+Cancel restores focus to Review. Confirmation focuses its heading; completion/error
+feedback is announced. Saving disables duplicate confirmation and selection changes.
+Only a validated 201 response announces saved; 409 reports already saved. My watchlist
+links to the existing personal list. Research evidence remains visible after save failures.
+
+The action is bound to the current research generation, result object, selected symbol,
+and internal account identity. Every new research submission increments the generation,
+including repeated identical questions and invalid submissions. New results, account
+changes, sign-out and unmount invalidate confirmation, abort pending requests, and ignore
+late responses. Synchronous SDK auth callbacks invalidate without additional auth calls;
+Confirm rechecks its binding and reuses requestWatchlist's independent SDK session check.
+The existing helper's safe URL validation, twelve-second total deadline, per-request Bearer
+header and response validation are unchanged. Tokens/account details never go to Gemini,
+URLs, logs or custom storage. There is no model write tool or changed agent loop.
+
+Signed-out visitors see a login link with no saved/resumed action. Loading/unavailable auth
+states cannot save; public research stays usable. Login still uses the existing navigation
+rules and does not automatically return to or execute a research action.
+
+Definite failures require another Review and Confirm. Uncertain writes (including a sent
+request timing out or returning an unverifiable result) block that symbol's action for the
+current result/account. Open My watchlist and **Refresh saved symbols** to check whether it
+completed before deciding to retry there. Changing selection away and back does not clear
+the block. There are no automatic retries or automatic global sign-outs. A new research
+result or a remount starts a fresh UI context, not proof that an earlier write failed.
+After Confirm, browser cancellation/navigation is not rollback: the server may have completed
+the save. No obsolete success is displayed in another account or research result.
+
+### Manual confirmation checks
+
+Use the existing personal project/frontend/backend setup documented above, with demo market
+data and the already configured research service. These checks are manual, not executed by
+the test suite; research submission may call Gemini.
+
+1. Signed out, collect research and verify the login message. Log in normally: no save
+   should resume. Check authentication loading/unavailable states with browser mocks while
+   research remains public. Return to research and submit again if needed.
+2. Collect quote-only, historical-only and mixed evidence, including overlapping symbols.
+   Verify choices come from evidence and appear once each. Check fictional labels and
+   unavailable/empty/partial-history notices; do not treat missing metrics as analysis.
+3. Select a symbol, Review, then Cancel. Verify no POST in browser request counts (do not
+   copy headers/tokens). Review again and Confirm; verify one POST and saved feedback,
+   then visit My watchlist and refresh. Repeat for friendly already-saved feedback.
+4. Open a confirmation and change selection or submit another research question, including
+   the identical question. Verify the old confirmation cannot submit. With two existing
+   accounts, check sign-out/account switching and that confirmation never transfers.
+5. Use mocked delayed session/fetch responses for account changes, new results and unmount
+   during a pending save. Confirm late completion cannot announce success for another
+   context. A real submitted write may still finish; inspect My watchlist before retrying.
+6. Use browser response mocks for 401/403, 503, malformed 201 and timeout. Research evidence
+   must remain visible. Definite failures require re-review; uncertain writes show no success,
+   block immediate retry for that symbol, and direct to My watchlist. These mocked scenarios
+   are separate from real persistence checks.
+7. Check Tab/Enter navigation, confirmation heading focus, Cancel focus restoration, status
+   announcements and narrow mobile layout. New research/account changes must not pull focus
+   back into a removed confirmation.
+
+Tests cover eligibility/controller behavior, mocked real request helpers, static HTML,
+component handlers with mocked hooks, and ResearchPage submission generation wiring. They
+are not mounted browser interaction tests, do not establish live database isolation, and do
+not replace the manual accessibility/persistence checks. Run frontend tests/lint and the
+existing fail-fast environment-isolated build; backend/database contracts are unchanged.
