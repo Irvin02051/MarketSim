@@ -1,19 +1,22 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link } from 'react-router-dom'
+import ResearchWatchlistAction from '../components/ResearchWatchlistAction'
 import HistoricalResearchEvidence from '../components/HistoricalResearchEvidence'
 import { ResearchError, requestResearch, researchOutcome, validateQuestion } from '../lib/research'
+import { createResearchScope } from '../lib/researchWatchlist'
+import type { ResearchScope } from '../lib/researchWatchlist'
 import type { ResearchResult } from '../lib/research'
 import '../styles/DashboardPage.css'
 import '../styles/ResearchPage.css'
 
 const example = 'Compare Apple and Microsoft reported percentage changes.'
 const historicalExample = 'Compare Apple and Microsoft price change from 2025-01-01 to 2025-03-31 using fictional historical data.'
-type State = { kind: 'initial' | 'loading' } | { kind: 'error'; message: string } | { kind: 'result'; result: ResearchResult }
+type State = { kind: 'initial' | 'loading' } | { kind: 'error'; message: string } | { kind: 'result'; result: ResearchResult; generation: number }
 const labels = { answered: 'Research findings', unavailable: 'Explanation unavailable',
   unsupported: 'Request not supported', clarification: 'Clarification needed' }
 
-function Results({ result }: { result: ResearchResult }) {
+function Results({ result, generation, scope }: { result: ResearchResult; generation: number; scope: ResearchScope }) {
   const { explanation, quotes } = result
   const outcome = researchOutcome(result)
   const outcomeCount = result.tool_outcomes.length + result.historical_tool_outcomes.length
@@ -54,6 +57,7 @@ function Results({ result }: { result: ResearchResult }) {
     </>}
     {!quotes && <p>No quote evidence was collected.</p>}
     {showHistory && <HistoricalResearchEvidence evidence={result.historical_evidence} findings={result.historical_findings} />}
+    <ResearchWatchlistAction result={result} generation={generation} scope={scope} />
     <details className="research-activity"><summary>Tool activity ({outcomeCount} {outcomeCount === 1 ? 'outcome' : 'outcomes'})</summary>
       <p>{result.model_calls} model {result.model_calls === 1 ? 'call' : 'calls'};{' '}
         {result.tool_requests} tool {result.tool_requests === 1 ? 'request' : 'requests'} observed.</p>
@@ -75,6 +79,7 @@ function Results({ result }: { result: ResearchResult }) {
 export default function ResearchPage() {
   const [question, setQuestion] = useState('')
   const [state, setState] = useState<State>({ kind: 'initial' })
+  const [scope] = useState(createResearchScope)
   const current = useRef<AbortController | null>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const heading = useRef<HTMLHeadingElement>(null)
@@ -82,15 +87,17 @@ export default function ResearchPage() {
     document.title = 'Stock Research Assistant | MarketSim'
     heading.current?.focus()
     return () => {
+      scope.dispose()
       current.current?.abort()
       current.current = null
       clearTimeout(timer.current)
     }
-  }, [])
+  }, [scope])
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (current.current) return
+    const requestGeneration = scope.next()
     let trimmed: string
     try { trimmed = validateQuestion(question) } catch (error) {
       setState({ kind: 'error', message: (error as ResearchError).message })
@@ -107,7 +114,7 @@ export default function ResearchPage() {
     }, 35_000)
     try {
       const result = await requestResearch(import.meta.env.VITE_API_BASE_URL, trimmed, controller.signal)
-      if (current.current === controller) setState({ kind: 'result', result })
+      if (current.current === controller) setState({ kind: 'result', result, generation: requestGeneration })
     } catch (error) {
       if (current.current === controller) setState({ kind: 'error', message: error instanceof ResearchError
         ? error.message : 'Research could not be completed. Please try again later.' })
@@ -149,7 +156,7 @@ export default function ResearchPage() {
       </form>
       <p role="status" aria-live="polite" aria-atomic="true" className={state.kind === 'error' ? 'research-error' : 'research-status'}>{announcement}</p>
       {state.kind === 'initial' && <p>Ask a question to collect evidence. No research requests are made until you submit.</p>}
-      {state.kind === 'result' && <Results result={state.result} />}
+      {state.kind === 'result' && <Results key={state.generation} result={state.result} generation={state.generation} scope={scope} />}
     </main>
     <footer className="dashboard-footer"><span>MarketSim · Built for learning.</span><p>Educational research only, not financial advice.</p></footer>
   </div>
