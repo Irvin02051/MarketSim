@@ -575,3 +575,175 @@ class IdentityApiTests(unittest.TestCase):
             self.assertEqual(response.headers.get('access-control-allow-origin'), origin if allowed else None)
             self.assertIn('authorization', response.headers['access-control-allow-headers'].lower())
             self.assertNotIn('access-control-allow-credentials', response.headers)
+
+
+class ProviderHistoryApiTests(unittest.TestCase):
+    path = '/api/stocks/AAPL/history/provider'
+
+    def setUp(self):
+        self.dates = {'start_date': '2026-10-23', 'end_date': '2026-10-28'}
+        environment = patch.dict('os.environ', {
+            'MARKET_DATA_PROVIDER': 'demo', 'RESEARCH_ENABLED': 'false',
+            'REAL_HISTORY_ENABLED': 'true', 'ALPHA_VANTAGE_API_KEY': 'PRIVATE_SENTINEL',
+        }, clear=True)
+        environment.start()
+        self.addCleanup(environment.stop)
+        # All real transports are blocked; selected tests replace only the async
+        # handler with MockTransport. No environment files or real services are used.
+        for transport, method in [('AsyncHTTPTransport', 'handle_async_request'),
+                                  ('HTTPTransport', 'handle_request')]:
+            guard = patch(f'httpx.{transport}.{method}', side_effect=AssertionError('Network forbidden'))
+            guard.start()
+            self.addCleanup(guard.stop)
+
+    def test_default_disabled_independent_of_key_and_quote_mode(self):
+        for flag in [None, 'false', '', '1', 'TRUE', ' true ']:
+            with patch.dict('os.environ', {'MARKET_DATA_PROVIDER': 'alpha_vantage'}):
+                import os
+                if flag is None:
+                    os.environ.pop('REAL_HISTORY_ENABLED', None)
+                else:
+                    os.environ['REAL_HISTORY_ENABLED'] = flag
+                with TestClient(app) as client, patch.object(
+                    app.state.historical_data, 'get_history', new_callable=AsyncMock,
+                ) as history:
+                    self.assertEqual(app.state.historical_data.mode, 'demo')
+                    response = client.get(self.path, params=self.dates)
+                    self.assertEqual(response.status_code, 503)
+                    self.assertEqual(response.json(), {'detail': 'Provider history is disabled.'})
+                    history.assert_not_called()
+                    self.assertEqual(client.get('/health').status_code, 200)
+
+    def test_missing_key_does_not_break_startup_or_spend_budget(self):
+        with patch.dict('os.environ', {'ALPHA_VANTAGE_API_KEY': ''}), TestClient(app) as client:
+            self.assertEqual(client.get('/health').status_code, 200)
+            response = client.get(self.path, params=self.dates)
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(response.json()['detail'], 'Alpha Vantage API key is not configured.')
+            self.assertEqual(len(app.state.historical_data.budget.attempts), 0)
+            self.assertEqual(client.get('/api/stocks/AAPL/quote').status_code, 200)
+
+    def test_typed_result_normalization_cache_and_shared_lifecycle(self):
+        from test_real_history import payload
+
+        transport = httpx.MockTransport(lambda req: httpx.Response(200, json=payload()))
+        with patch('httpx.AsyncHTTPTransport.handle_async_request',
+                   side_effect=transport.handle_async_request) as upstream, TestClient(app) as client:
+            service = app.state.historical_data
+            self.assertIs(service.client, app.state.market_data.client)
+            self.assertIs(service.budget, app.state.market_data.budget)
+            first = client.get('/api/stocks/aapl/history/provider', params=self.dates)
+            second = client.get(self.path, params=self.dates)
+            self.assertEqual((first.status_code, second.status_code), (200, 200))
+            data, cached = first.json(), second.json()
+            self.assertEqual(data['symbol'], 'AAPL')
+            self.assertEqual((data['source'], data['data_kind'], data['adjustment_basis']),
+                             ('alpha_vantage', 'end_of_day', 'unadjusted'))
+            self.assertIsNone(data['bars'][0]['volume'])
+            self.assertEqual(data['returned_range'], {'start': '2026-10-23', 'end': '2026-10-28'})
+            self.assertEqual(data['coverage'], 'within_snapshot_bounds')
+            self.assertTrue(data['limitations'])
+            self.assertFalse(data['cache_hit'])
+            self.assertTrue(cached['cache_hit'])
+            self.assertEqual(cached, {**data, 'cache_hit': True})
+            upstream.assert_awaited_once()
+            self.assertEqual(len(service.budget.attempts), 1)
+            route = client.get('/openapi.json').json()['paths']['/api/stocks/{symbol}/history/provider']['get']
+            self.assertEqual(route['responses']['200']['content']['application/json']['schema'],
+                             {'$ref': '#/components/schemas/RealHistoryResult'})
+            self.assertTrue({'422', '429', '502', '503', '504'} <= route['responses'].keys())
+        self.assertTrue(service.closed)
+        self.assertTrue(service.client.is_closed)
+
+    def test_invalid_inputs_never_reach_service(self):
+        invalid = [{}, {'start_date': '2026-10-23'}, {'end_date': '2026-10-28'},
+                   {**self.dates, 'interval': 'daily'}, {**self.dates, 'extra': 'PRIVATE_SENTINEL'},
+                   {'start_date': '2026-01-01', 'end_date': '2026-04-01'},
+                   {'start_date': '2026-10-28', 'end_date': '2026-10-23'}]
+        for name in self.dates:
+            invalid.append([*self.dates.items(), (name, self.dates[name])])
+            for value in ['', '2026-1-01', '20261023', '2026-02-30', '2026-10-23T00:00:00Z',
+                          ' 2026-10-23', '0000-01-01', '2026-10-23\n']:
+                invalid.append({**self.dates, name: value})
+        with TestClient(app) as client, patch.object(
+            app.state.historical_data, 'get_history', new_callable=AsyncMock,
+        ) as history:
+            for query in invalid:
+                with self.subTest(query=query):
+                    self.assertEqual(client.get(self.path, params=query).status_code, 422)
+            for symbol in ['TSLA', 'A1', 'PRIVATE_SENTINEL']:
+                response = client.get(f'/api/stocks/{symbol}/history/provider', params=self.dates)
+                self.assertEqual(response.status_code, 422)
+                self.assertNotIn('PRIVATE_SENTINEL', response.text)
+            history.assert_not_called()
+
+    def test_empty_and_range_unavailable(self):
+        from test_real_history import payload
+
+        transport = httpx.MockTransport(lambda req: httpx.Response(200, json=payload()))
+        with patch('httpx.AsyncHTTPTransport.handle_async_request',
+                   side_effect=transport.handle_async_request) as upstream, TestClient(app) as client:
+            response = client.get(self.path, params={'start_date': '2026-10-24', 'end_date': '2026-10-25'})
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertEqual((data['status'], data['bars'], data['returned_range']), ('empty', [], None))
+            response = client.get(self.path, params={**self.dates, 'start_date': '2026-10-01'})
+            self.assertEqual(response.status_code, 422)
+            self.assertEqual(response.json(), {
+                'detail': 'Requested range is unavailable in the compact snapshot.',
+                'available_range': {'start': '2026-10-23', 'end': '2026-10-28'},
+            })
+            upstream.assert_awaited_once()
+
+    def test_safe_provider_errors_and_budget_mapping(self):
+        cases = [(httpx.Response(429, text='PRIVATE_SENTINEL'), 429),
+                 (httpx.Response(500, text='PRIVATE_SENTINEL'), 502),
+                 (httpx.Response(302, headers={'Location': 'https://example.invalid/PRIVATE_SENTINEL'}), 502),
+                 (httpx.Response(200, json={'Note': 'quota exceeded PRIVATE_SENTINEL'}), 429),
+                 (httpx.Response(200, json={'PRIVATE_SENTINEL': True}), 502),
+                 (httpx.ConnectError('PRIVATE_SENTINEL'), 502),
+                 (httpx.ReadTimeout('PRIVATE_SENTINEL'), 504)]
+        output = io.StringIO()
+        handler = logging.StreamHandler(output)
+        logging.getLogger().addHandler(handler)
+        self.addCleanup(logging.getLogger().removeHandler, handler)
+        for result, status in cases:
+            def handle(req, result=result):
+                if isinstance(result, Exception):
+                    raise result
+                return result
+            transport = httpx.MockTransport(handle)
+            with patch('httpx.AsyncHTTPTransport.handle_async_request',
+                       side_effect=transport.handle_async_request) as upstream, TestClient(app) as client:
+                response = client.get(self.path, params=self.dates)
+                self.assertEqual(response.status_code, status)
+                self.assertEqual(set(response.json()), {'detail'})
+                self.assertNotIn('PRIVATE_SENTINEL', response.text)
+                self.assertNotIn('https://', response.text)
+                upstream.assert_awaited_once()
+        self.assertNotIn('PRIVATE_SENTINEL', output.getvalue())
+        with TestClient(app) as client:
+            for _ in range(20):
+                app.state.market_data.budget.reserve()
+            response = client.get(self.path, params=self.dates)
+            self.assertEqual(response.status_code, 429)
+            self.assertEqual(response.json()['detail'], 'Local daily provider attempt budget exhausted.')
+
+    def test_enabled_keeps_demo_and_research_routes_unchanged(self):
+        with TestClient(app) as client, patch.object(
+            app.state.historical_data, 'get_history', new_callable=AsyncMock,
+        ) as provider:
+            response = client.get('/api/stocks/AAPL/history', params={
+                'start_date': '2025-01-01', 'end_date': '2025-01-03',
+            })
+            expected = get_history({'symbol': 'AAPL', 'start_date': date(2025, 1, 1),
+                                    'end_date': date(2025, 1, 3)}).model_dump(mode='json')
+            actual = response.json()
+            expected.pop('fetched_at'); actual.pop('fetched_at')
+            self.assertEqual(actual, expected)
+            self.assertEqual(client.get('/api/stocks/AAPL/quote').json()['source'], 'demo')
+            self.assertEqual(client.post('/api/research', json={
+                'question': 'Compare', 'symbols': ['AAPL'],
+            }).status_code, 503)
+            self.assertEqual(client.post('/api/research/agent', json={'question': 'Compare'}).status_code, 503)
+            provider.assert_not_called()

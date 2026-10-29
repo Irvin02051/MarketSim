@@ -1,4 +1,5 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import date
 from typing import Annotated
@@ -13,7 +14,12 @@ from app.auth import Identity, IdentityVerifier, require_identity
 from app.gemini_client import configured_client
 from app.historical_data import HistoricalInput, HistoricalResult, get_history
 from app.market_data import MarketData, ProviderBudget, Quote, QuoteError
-from app.real_history import HistoricalService
+from app.real_history import (
+    HistoricalService,
+    HistoryError,
+    HistoryRequest,
+    RealHistoryResult,
+)
 from app.research_agent import AgentInput, AgentResult, ResearchAgent
 from app.research_explanation import ResearchExplanation, ResearchInput, ResearchResult
 from app.research_explanation import explanation as research_outcome
@@ -40,7 +46,9 @@ async def lifespan(app: FastAPI):
         budget = ProviderBudget()
         service = MarketData(client, budget=budget)
         app.state.market_data = service
-        history = HistoricalService(client, budget=budget)  # Explicit demo, never follows quote mode.
+        app.state.real_history_enabled = os.environ.get('REAL_HISTORY_ENABLED', 'false') == 'true'
+        history = HistoricalService(client, budget=budget,
+                                    mode='alpha_vantage' if app.state.real_history_enabled else 'demo')
         app.state.historical_data = history
         model = configured_client()
         app.state.research = ResearchExplanation(model)
@@ -116,6 +124,44 @@ def get_stock_history(
             detail='Use AAPL, MSFT, or NVDA and an ordered date range of at most two calendar years.',
         ) from None
     return get_history(validated)
+
+
+@app.get('/api/stocks/{symbol}/history/provider', response_model=RealHistoryResult, responses={
+    422: {'description': 'Invalid input or range unavailable; available_range supplied when known'},
+    429: {'description': 'Local attempt budget or provider quota exhausted'},
+    502: {'description': 'Provider HTTP, connection, malformed data or oversized response error'},
+    503: {'description': 'Provider history disabled or configuration unavailable'},
+    504: {'description': 'Provider request timed out'},
+})
+async def get_provider_history(
+    symbol: str, request: Request,
+    start_date: Annotated[str, Query(pattern=r'^[0-9]{4}-[0-9]{2}-[0-9]{2}$', max_length=10)],
+    end_date: Annotated[str, Query(pattern=r'^[0-9]{4}-[0-9]{2}-[0-9]{2}$', max_length=10)],
+):
+    """Opt-in raw daily history for private local use; this flag is not authentication."""
+    if set(request.query_params) != {'start_date', 'end_date'} or any(
+        len(request.query_params.getlist(name)) != 1 for name in ('start_date', 'end_date')
+    ):
+        raise HTTPException(status_code=422, detail='Supply only start_date and end_date, once each.')
+    try:
+        start, end = date.fromisoformat(start_date), date.fromisoformat(end_date)
+    except ValueError:
+        raise HTTPException(status_code=422, detail='Dates must be valid YYYY-MM-DD dates.') from None
+    try:
+        validated = HistoryRequest(symbol=symbol, start_date=start, end_date=end)
+    except ValidationError:
+        raise HTTPException(status_code=422, detail=(
+            'Use AAPL, MSFT, or NVDA and an ordered inclusive range of at most 90 calendar days.'
+        )) from None
+    if not request.app.state.real_history_enabled:
+        raise HTTPException(status_code=503, detail='Provider history is disabled.')
+    try:
+        return await request.app.state.historical_data.get_history(validated)
+    except HistoryError as error:
+        content = {'detail': error.detail}
+        if error.available_range is not None:
+            content['available_range'] = error.available_range.model_dump(mode='json')
+        return JSONResponse(status_code=error.status, content=content)
 
 
 @app.post('/api/research', response_model=ResearchResult, responses={
