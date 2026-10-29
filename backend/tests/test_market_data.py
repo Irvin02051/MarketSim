@@ -6,7 +6,15 @@ from unittest.mock import patch
 import httpx
 from pydantic import ValidationError
 
-from app.market_data import TTL, WINDOW, MarketData, Quote, QuoteError, parse_quote
+from app.market_data import (
+    TTL,
+    WINDOW,
+    MarketData,
+    ProviderBudget,
+    Quote,
+    QuoteError,
+    parse_quote,
+)
 
 NOW = datetime(2026, 10, 10, tzinfo=timezone.utc)
 KEY = 'sentinel-secret-key'
@@ -22,6 +30,19 @@ def payload(symbol='AAPL'):
 
 
 class MarketDataTests(unittest.IsolatedAsyncioTestCase):
+    def test_injected_budget_preserves_rolling_boundary(self):
+        now = 0
+        budget = ProviderBudget(lambda: now)
+        for _ in range(20):
+            budget.reserve()
+        now = WINDOW - 1
+        with self.assertRaises(QuoteError) as caught:
+            budget.reserve()
+        self.assertEqual(caught.exception.status, 429)
+        now = WINDOW
+        budget.reserve()
+        self.assertEqual(list(budget.attempts), [WINDOW])
+
     async def asyncSetUp(self):
         self.now = 0.0
         self.calls = 0

@@ -12,7 +12,8 @@ from pydantic import ValidationError
 from app.auth import Identity, IdentityVerifier, require_identity
 from app.gemini_client import configured_client
 from app.historical_data import HistoricalInput, HistoricalResult, get_history
-from app.market_data import MarketData, Quote, QuoteError
+from app.market_data import MarketData, ProviderBudget, Quote, QuoteError
+from app.real_history import HistoricalService
 from app.research_agent import AgentInput, AgentResult, ResearchAgent
 from app.research_explanation import ResearchExplanation, ResearchInput, ResearchResult
 from app.research_explanation import explanation as research_outcome
@@ -36,8 +37,11 @@ async def lifespan(app: FastAPI):
     ) as data_client:
         app.state.watchlist = WatchlistService.configured(data_client)
         app.state.identity = IdentityVerifier.configured(auth_client)
-        service = MarketData(client)
+        budget = ProviderBudget()
+        service = MarketData(client, budget=budget)
         app.state.market_data = service
+        history = HistoricalService(client, budget=budget)  # Explicit demo, never follows quote mode.
+        app.state.historical_data = history
         model = configured_client()
         app.state.research = ResearchExplanation(model)
         app.state.research_agent = ResearchAgent(model)
@@ -48,7 +52,10 @@ async def lifespan(app: FastAPI):
                 if model is not None:
                     await model.close()
             finally:
-                await service.close()
+                try:
+                    await history.close()
+                finally:
+                    await service.close()
 
 
 app = FastAPI(title='MarketSim API', lifespan=lifespan)
