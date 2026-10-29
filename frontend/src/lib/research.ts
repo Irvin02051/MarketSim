@@ -48,7 +48,7 @@ export type ResearchResult = {
       fictional: boolean
       quote: {
         symbol: Symbol; price: number; currency: 'USD'; change_percent: number
-        latest_trading_day: string; fetched_at: string
+        latest_trading_day: string; fetched_at: string; cache_hit: boolean
         source: 'demo' | 'alpha_vantage'; data_kind: 'fictional' | 'end_of_day'
       }
     }[]
@@ -193,17 +193,23 @@ export function parseResearch(value: unknown): ResearchResult {
       evidence: list(bundle.evidence, (item) => {
         const evidence = object(item)
         const q = object(evidence.quote)
-        if (typeof evidence.fictional !== 'boolean') return invalid()
+        if (typeof evidence.fictional !== 'boolean' || typeof q.cache_hit !== 'boolean'
+          || !((q.source === 'demo' && q.data_kind === 'fictional' && evidence.fictional)
+            || (q.source === 'alpha_vantage' && q.data_kind === 'end_of_day' && !evidence.fictional))) return invalid()
         const tradingDate = day(q.latest_trading_day)
         const fetchedAt = timestamp(q.fetched_at)
         const price = number(q.price)
         if (price <= 0) return invalid()
         return { id: evidenceId(evidence.id, 'q'), fictional: evidence.fictional,
           quote: { symbol: symbol(q.symbol), currency: oneOf(q.currency, ['USD']), price,
-            change_percent: number(q.change_percent), latest_trading_day: tradingDate, fetched_at: fetchedAt,
+            change_percent: number(q.change_percent), latest_trading_day: tradingDate, fetched_at: fetchedAt, cache_hit: q.cache_hit,
             source: oneOf(q.source, ['demo', 'alpha_vantage']), data_kind: oneOf(q.data_kind, ['fictional', 'end_of_day']) } }
       }),
     }
+    const fictionalCount = quotes.evidence.filter(item => item.fictional).length
+    const expectedMode = !quotes.evidence.length ? 'unavailable'
+      : fictionalCount === quotes.evidence.length ? 'fictional' : fictionalCount ? 'mixed' : 'provider_backed'
+    if (quotes.data_mode !== expectedMode) return invalid()
   }
   if (explanation.status === 'answered' && (!quotes?.evidence.length || !explanation.findings.length)) return invalid()
   if (explanation.status !== 'answered' && explanation.findings.length) return invalid()
