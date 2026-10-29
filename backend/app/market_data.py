@@ -29,6 +29,22 @@ class QuoteError(Exception):
         self.detail = detail
 
 
+class ProviderBudget:
+    """One event-loop/process budget shared by quote and history attempts."""
+
+    def __init__(self, clock=time.monotonic):
+        self.clock = clock
+        self.attempts: deque[float] = deque()
+
+    def reserve(self):
+        now = self.clock()
+        while self.attempts and self.attempts[0] <= now - WINDOW:
+            self.attempts.popleft()
+        if len(self.attempts) >= 20:
+            raise QuoteError(429, 'Local daily provider attempt budget exhausted.')
+        self.attempts.append(now)  # No await: failed calls also count.
+
+
 class Quote(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False, frozen=True)
     symbol: Literal['AAPL', 'MSFT', 'NVDA']
@@ -114,7 +130,7 @@ def parse_quote(payload: object, symbol: str, fetched_at: datetime) -> Quote:
 
 class MarketData:
     def __init__(self, client: httpx.AsyncClient, *, provider=None, api_key=None,
-                 clock=time.monotonic, utcnow=lambda: datetime.now(timezone.utc)):
+                 clock=time.monotonic, utcnow=lambda: datetime.now(timezone.utc), budget=None):
         self.client = client
         self.provider = os.environ.get('MARKET_DATA_PROVIDER', 'demo') if provider is None else provider
         self.api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '') if api_key is None else api_key
@@ -122,7 +138,8 @@ class MarketData:
         self.utcnow = utcnow
         self.cache: dict[str, tuple[float, Quote]] = {}
         self.inflight: dict[str, asyncio.Task] = {}
-        self.attempts: deque[float] = deque()
+        self.budget = budget if budget is not None else ProviderBudget(clock)
+        self.attempts = self.budget.attempts
 
     async def get_quote(self, symbol: str) -> Quote:
         symbol = normalize_symbol(symbol)
@@ -159,12 +176,7 @@ class MarketData:
         elif self.provider == 'alpha_vantage':
             if not self.api_key.strip():
                 raise QuoteError(503, 'Alpha Vantage API key is not configured.')
-            now = self.clock()
-            while self.attempts and self.attempts[0] <= now - WINDOW:
-                self.attempts.popleft()
-            if len(self.attempts) >= 20:
-                raise QuoteError(429, 'Local daily provider attempt budget exhausted.')
-            self.attempts.append(now)  # Reserve before any await; failed calls count too.
+            self.budget.reserve()
             try:
                 response = await self.client.get(
                     'https://www.alphavantage.co/query',

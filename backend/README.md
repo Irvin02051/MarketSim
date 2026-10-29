@@ -945,3 +945,121 @@ MARKET_DATA_PROVIDER=demo RESEARCH_ENABLED=false .venv/bin/python -m uvicorn app
 No research submission, history-provider change, live test automation, or public
 real-data deployment is authorized by this sequence. The recorded manual result above
 is limited to that check; mocked tests cannot establish live entitlement or freshness.
+
+## Internal real-history retrieval foundation
+
+`app.real_history.HistoricalService` is an internal async service, not a new
+endpoint or agent tool. Existing history routes, charts, metrics and historical
+research still use the fixed fictional 2024–2025 fixtures. Quote configuration
+never activates real history. The lifespan creates `app.state.historical_data`
+in default demo mode and shares its HTTPX client and `ProviderBudget` with quotes.
+
+The internal interface is `await service.get_history(HistoryRequest(...))` (a
+validated dictionary also works). A caller-owned instance is constructed with
+`HistoricalService(client, budget=shared_budget)` for demo mode or explicitly
+`HistoricalService(client, budget=shared_budget, mode='alpha_vantage')` for real
+retrieval. Close it with `await service.close()` before closing the HTTPX client.
+Use the same `ProviderBudget` instance in `MarketData(client, budget=shared_budget)`.
+The application lifespan already owns this setup and cleanup. Use the application
+client's bounded connections, disabled transport logging, and default zero transport
+retries. Custom callers must preserve these settings; redirects are explicitly
+disabled on every history request.
+
+Real mode reads only the existing backend `ALPHA_VANTAGE_API_KEY`, or an explicit
+backend constructor argument. No new environment variables are needed; no keys
+belong in frontend configuration. `HistoryRequest` accepts one supported normalized
+symbol (AAPL/MSFT/NVDA), inclusive explicit dates and daily interval only. Python
+inputs use `date` objects; `HistoryRequest.model_validate_json()` accepts ISO dates.
+Extra fields, reversed ranges and intervals exceeding **90 calendar days** fail
+before network access. This application bound is not a provider coverage guarantee.
+It applies to both modes of this new wrapper; the existing fictional endpoint keeps
+its original two-calendar-year contract.
+
+The fixed request uses `TIME_SERIES_DAILY`, `outputsize=compact`, `datatype=json`
+at `https://www.alphavantage.co/query`. The official
+[daily documentation](https://www.alphavantage.co/documentation/#daily), checked
+October 29, 2026, documents free compact access to the latest 100 observations;
+full daily history requires premium access. This service uses only compact raw
+prices: no billing, subscription, paid endpoint or premium fallback. A limited AAPL
+live check is recorded below; MSFT/NVDA live history remains unverified.
+
+The separate `RealHistoryResult` reports `source=alpha_vantage`,
+`data_kind=end_of_day`, `adjustment_basis=unadjusted`, USD, requested range,
+available snapshot range, actual returned range (null when empty), original UTC
+retrieval timestamp, cache status, ordered OHLCV bars, timezone and limitations.
+Coverage is `within_snapshot_bounds`, not exchange-calendar completeness. Requests
+outside either snapshot boundary raise `HistoryError` with status 422 and typed
+`available_range`; there is no silent partial success. An interval inside those
+bounds may legitimately have no observations (`status=empty`).
+
+All bars are validated, including those outside the requested subrange. Duplicate
+JSON keys/dates fail before decoding can overwrite them. Dates remain dates;
+observations are sorted ascending without filling gaps. OHLC must be finite,
+positive and range-consistent. Missing OHLC fails. Volume must be a nonnegative
+integer string or missing/null (preserved as null); booleans and malformed values
+fail. Symbol metadata must match. Recognized IANA timezone metadata is preserved;
+missing/unrecognized timezone becomes null, explicitly unknown. Arbitrary provider
+text is not forwarded. Neither timezone nor retrieval time proves session completion
+or freshness; no daily midnight timestamps or exchange calendar are fabricated.
+
+Raw prices may contain split discontinuities. Splits/dividends are neither detected
+nor adjusted. Real results intentionally fail the existing fictional metrics input
+boundary; they contain no `fixture_range` or synthetic-weekday labels. No real data
+is passed to Gemini or used to calculate returns/volatility in this milestone.
+
+Fetches have a ten-second total network/body deadline and 256 KiB decoded body cap.
+At most 100 bars are accepted. Only validated snapshots are cached: one per supported
+symbol, at most three, for six hours. Subranges share snapshots and pending fetches.
+Cache hits preserve original `fetched_at`; waiters joining a new fetch are not cache
+hits. Expired snapshots are replaced, never accumulated into longer history. Failures
+do not serve expired or fictional replacements. A range error can leave a valid
+snapshot cached for a later narrower request. Cancelling one waiter does not cancel
+shared work; shutdown cancels pending work, closes streams and clears the cache.
+
+Quotes and real history share **20 attempted requests per rolling 24 hours**,
+reserved before network awaits. Failures count; cache hits do not. Quote caching
+and coalescing are unchanged. Use one worker: this process-local budget resets on
+restart and cannot track other processes consuming the same provider key. Do not
+restart to bypass quotas. No automatic retries are added. Safe errors distinguish
+quota (429), provider/malformed data/oversized body (502), unavailable configuration
+or closed service (503), and timeout (504), without raw messages or credentials.
+
+Tests use self-authored fixtures and mocked transport for validation, cache/budget,
+streaming bounds, cancellation, metrics rejection and unchanged fictional routes/tools.
+Public-display, external-LLM and cache-retention
+rights remain unresolved: the TTL is an engineering bound, not a license entitlement.
+Public demos stay fictional.
+
+### Manual verification — October 29, 2026
+
+The user completed a local AAPL history check for 2026-10-01 through 2026-10-23.
+It returned 17 observations with matching returned bounds, `source=alpha_vantage`,
+`data_kind=end_of_day`, and `adjustment_basis=unadjusted`. The second identical
+request reused the cache with identical bars and the original `fetched_at`.
+The check permitted at most one upstream attempt. No Gemini calls or provider data
+files were created.
+
+This establishes successful AAPL retrieval and cache reuse, not independent price
+accuracy, complete exchange-calendar coverage, MSFT/NVDA live-history verification,
+adjustment support, or public-display permission. Existing charts and historical
+research remain fictional.
+
+### Procedure for any later local check
+
+After reviewing private cache/storage terms and separately authorizing a minimal check:
+
+1. Stop other provider consumers and keep `RESEARCH_ENABLED=false`. Supply the existing
+   free key privately to backend environment variables; never paste it into chat.
+2. Use a short local async harness with redirects/retries and transport logging disabled,
+   one shared budget, and an explicitly real-mode history service. Do not load actual
+   environment files. Existing history HTTP endpoints intentionally remain fictional.
+3. Make one AAPL request covering at most 90 days and ending on a known past observation
+   date. On range-unavailable, review available bounds before narrowing against the
+   cached snapshot. Stop on other errors rather than retrying or upgrading.
+4. Review summary provenance, count, ranges and timestamps. Repeat the accepted range
+   once to verify unchanged bars, original `fetched_at` and `cache_hit=true`. Do not
+   save payloads as fixtures, calculate metrics or send the data to Gemini.
+5. Close the service/client and remove the key from that shell. Record actual outcomes.
+   Further symbols and chart/research integration are separate reviewed milestones.
+
+These steps are a proposal, not authorization to execute live requests.
