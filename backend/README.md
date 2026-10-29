@@ -948,11 +948,13 @@ is limited to that check; mocked tests cannot establish live entitlement or fres
 
 ## Internal real-history retrieval foundation
 
-`app.real_history.HistoricalService` is an internal async service, not a new
-endpoint or agent tool. Existing history routes, charts, metrics and historical
+`app.real_history.HistoricalService` is an async service now exposed through the
+opt-in `/history/provider` endpoint documented below, not an agent tool.
+The original `/history` route, charts, metrics and historical
 research still use the fixed fictional 2024–2025 fixtures. Quote configuration
 never activates real history. The lifespan creates `app.state.historical_data`
-in default demo mode and shares its HTTPX client and `ProviderBudget` with quotes.
+in default demo mode, or alpha_vantage mode only when `REAL_HISTORY_ENABLED=true`,
+and shares its HTTPX client and `ProviderBudget` with quotes.
 
 The internal interface is `await service.get_history(HistoryRequest(...))` (a
 validated dictionary also works). A caller-owned instance is constructed with
@@ -966,7 +968,7 @@ retries. Custom callers must preserve these settings; redirects are explicitly
 disabled on every history request.
 
 Real mode reads only the existing backend `ALPHA_VANTAGE_API_KEY`, or an explicit
-backend constructor argument. No new environment variables are needed; no keys
+backend constructor argument. The endpoint additionally requires `REAL_HISTORY_ENABLED=true`; no keys
 belong in frontend configuration. `HistoryRequest` accepts one supported normalized
 symbol (AAPL/MSFT/NVDA), inclusive explicit dates and daily interval only. Python
 inputs use `date` objects; `HistoryRequest.model_validate_json()` accepts ISO dates.
@@ -1052,7 +1054,7 @@ After reviewing private cache/storage terms and separately authorizing a minimal
    free key privately to backend environment variables; never paste it into chat.
 2. Use a short local async harness with redirects/retries and transport logging disabled,
    one shared budget, and an explicitly real-mode history service. Do not load actual
-   environment files. Existing history HTTP endpoints intentionally remain fictional.
+   environment files. The original `/history` HTTP endpoint intentionally remains fictional.
 3. Make one AAPL request covering at most 90 days and ending on a known past observation
    date. On range-unavailable, review available bounds before narrowing against the
    cached snapshot. Stop on other errors rather than retrying or upgrading.
@@ -1063,3 +1065,98 @@ After reviewing private cache/storage terms and separately authorizing a minimal
    Further symbols and chart/research integration are separate reviewed milestones.
 
 These steps are a proposal, not authorization to execute live requests.
+
+## Opt-in provider-history endpoint (private local development)
+
+`GET /api/stocks/{symbol}/history/provider?start_date=2026-10-01&end_date=2026-10-23`
+returns the service's `RealHistoryResult`. Only the exact environment value
+`REAL_HISTORY_ENABLED=true` enables this route, read at startup; unset, false,
+misspelled and other values keep it disabled. Restart after changing configuration.
+Neither quote mode nor key presence enables it. An absent/blank backend-only
+`ALPHA_VANTAGE_API_KEY` produces a safe 503 when called, without breaking startup.
+The example configuration defaults to `REAL_HISTORY_ENABLED=false`.
+
+Both dates are required exactly once in YYYY-MM-DD format. Unknown query parameters
+(including `interval`) and repeated parameters fail. Symbols normalize to AAPL,
+MSFT or NVDA; dates must be ordered and span at most 90 calendar days inclusive.
+Validation precedes enablement and retrieval, so malformed requests return 422 even
+when disabled. No provider call occurs for invalid or disabled requests.
+
+| HTTP | Meaning and body |
+| --- | --- |
+| 200 | Typed real result, including `status=ok` or `status=empty` inside snapshot bounds. |
+| 422 | Input validation error, or unavailable snapshot range. The latter is `{"detail":"Requested range is unavailable in the compact snapshot.","available_range":{"start":"YYYY-MM-DD","end":"YYYY-MM-DD"}}`. |
+| 429 | Shared local attempt budget exhausted or provider quota reached. |
+| 502 | Provider HTTP rejection (including redirects), connection failure, malformed data, or oversized body. |
+| 503 | Endpoint disabled, missing provider configuration, or closed service. |
+| 504 | Provider transport timeout or total fetch deadline exceeded. |
+
+Service failures use `{"detail":"safe application message"}`, with top-level
+`available_range` only when supplied by the service. Framework missing/format errors
+use FastAPI's usual 422 `detail` list; semantic input errors use a safe detail string.
+No raw provider errors, bodies, request URLs or credentials are returned. There are
+no retries, premium fallback or fictional substitutions. The same lifespan-owned
+client, six-hour snapshot cache and quote/history budget are reused across requests;
+there is no per-request client or separate provider allowance.
+
+Responses preserve source, end-of-day labeling, unknown/null timezone where needed,
+unadjusted basis, requested/available/returned ranges, nullable volume, retrieval
+time, cache status and limitations. Retrieval time does not establish price freshness.
+Raw prices have no split/dividend handling. No metric, chart or agent integration is
+added: `/history`, charts and historical research remain fictional regardless of this flag.
+
+**The flag is not authentication or a privacy boundary.** Bind the local server to
+`127.0.0.1`, use one worker and keep the route disabled in public deployments pending
+permissions. Do not expose it through a tunnel/proxy. Display, external-LLM and cache
+retention rights remain unresolved. Strictly free: do not add billing or upgrade on errors.
+
+### Manual endpoint verification — October 29, 2026
+
+The user verified AAPL for the requested range October 1–23, 2026. The endpoint
+returned 17 observations with `source=alpha_vantage`, `data_kind=end_of_day`, and
+`adjustment_basis=unadjusted`. The first response reported `cache_hit=false`;
+the repeated response reported `cache_hit=true`, with identical bars and unchanged
+`fetched_at`.
+
+This verifies one AAPL endpoint/cache flow, not independent price accuracy, other
+symbols, display rights, or real-data metrics. Charts and historical research remain
+fictional. No raw provider bars or credentials are stored in this verification record.
+
+### Procedure for a later manual endpoint check
+
+Stop the old backend and other provider consumers first. In Mac zsh, enter the key
+at the silent prompt; no actual environment files are loaded. This starts only a local
+backend, with fictional quotes and research disabled:
+
+```zsh
+(
+  unsetopt XTRACE
+  cd /Users/irvin/Documents/MarketSim/backend || exit 1
+  trap 'unset ALPHA_VANTAGE_API_KEY' EXIT
+  read -rs 'ALPHA_VANTAGE_API_KEY?Alpha Vantage API key: ' || exit 1
+  print
+  export ALPHA_VANTAGE_API_KEY
+  MARKET_DATA_PROVIDER=demo RESEARCH_ENABLED=false REAL_HISTORY_ENABLED=true \
+    .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
+)
+```
+
+In another terminal, request one AAPL range without saving the response to a file:
+
+```zsh
+curl --silent --show-error --fail-with-body \
+  'http://127.0.0.1:8000/api/stocks/AAPL/history/provider?start_date=2026-10-01&end_date=2026-10-23'
+```
+
+Only after a successful response, repeat that exact command once while the same
+server/cache is running. Verify `source=alpha_vantage`, `data_kind=end_of_day`,
+`adjustment_basis=unadjusted`, identical bars and original `fetched_at`, with
+`cache_hit=true` on the repeat. No automatic retry is configured. Stop on failure;
+do not repeatedly retry or restart to bypass quotas. The date window is explicit,
+not permanently valid: the compact snapshot moves over time. If unavailable, review
+the returned bounds before separately deciding on a supported range.
+
+Stop the server with Ctrl-C; the subshell removes its key. If a key was previously
+exported in the parent shell, run `unset ALPHA_VANTAGE_API_KEY` there too. The manual
+endpoint result above is separate from the earlier internal-service check; no
+additional live requests were made while recording it. No Gemini calls are needed.
