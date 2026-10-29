@@ -691,3 +691,25 @@ component handlers with mocked hooks, and ResearchPage submission generation wir
 are not mounted browser interaction tests, do not establish live database isolation, and do
 not replace the manual accessibility/persistence checks. Run frontend tests/lint and the
 existing fail-fast environment-isolated build; backend/database contracts are unchanged.
+
+
+## Private end-of-day quote readiness
+
+Use the [backend's free, private manual quote procedure](../backend/README.md#private-free-end-of-day-quote-check)
+for the first Alpha Vantage check. Keep `RESEARCH_ENABLED=false`, use one backend
+worker, and do not open quote panels during its bounded curl sequence. No paid plan,
+billing setup, subscription, or frontend provider key is needed or permitted for this
+milestone. Automated tests use mocks; live-provider compatibility remains unverified.
+
+The research parser now requires coherent `demo/fictional` or
+`alpha_vantage/end_of_day` provenance, matching fictional flags and bundle data mode,
+and preserves the backend cache-hit flag alongside source and both dates. This does
+not add a live badge or a freshness guarantee. Existing watchlist quote panels distinguish
+provider EOD data from fictional quotes and display the trading date, original backend
+fetch time and cache status. Refresh may return the six-hour cached quote; recent retrieval
+does not make an old trading date current. Do not infer market-calendar completeness.
+
+Backend quote mode does not change the fictional historical charts, historical research
+fixtures, or sample dashboard portfolio. Keep public demos in fictional mode until public
+display rights are resolved. Do not send real provider evidence to Gemini during the first
+quote check; real-evidence agent verification is a separate, later authorization.

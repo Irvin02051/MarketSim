@@ -47,6 +47,10 @@ class Quote(BaseModel):
 
     @model_validator(mode='after')
     def validate_dates_and_range(self):
+        if (self.source, self.data_kind) not in (
+            ('demo', 'fictional'), ('alpha_vantage', 'end_of_day'),
+        ):
+            raise ValueError('Quote source and data kind must agree')
         if self.fetched_at.tzinfo is None:
             raise ValueError('Fetch timestamp must be timezone-aware')
         if self.latest_trading_day > self.fetched_at.date():

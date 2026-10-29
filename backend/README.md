@@ -111,6 +111,9 @@ apply the browser's CORS policy.
 
 ## Milestone B: local research explanations
 
+For the first real quote check, use the private, research-disabled procedure below
+instead of submitting research. Provider data must not be sent to Gemini during that check.
+
 This is an LLM-assisted explanation endpoint, not a tool-calling agent.
 `POST /api/research` accepts a JSON object with exactly `question` and `symbols`:
 
@@ -474,8 +477,8 @@ symbol errors.
 
 History is **always fictional demo data**, even when `MARKET_DATA_PROVIDER` selects
 a live quote provider. It requires no credentials and works with research disabled.
-No quote-provider or model requests are made by this route. The frontend and agent
-tools do not consume history yet.
+No quote-provider or model requests are made by this route. The current frontend charts
+and historical agent tool consume these same fictional fixtures; real quotes do not change them.
 
 For a local check, stop any old backend and run from `backend/` without loading
 an environment file:
@@ -857,3 +860,88 @@ applied by this application. Then check two synthetic accounts through list/add/
 duplicate/delete, confirm independent ownership, and ensure timestamps survive a
 duplicate add. Never use administrative credentials or copy tokens into logs.
 This milestone made no live requests and did not access or modify the hosted project.
+
+
+## Private free end-of-day quote check
+
+User-reported manual verification completed October 29, 2026 with research disabled:
+AAPL, MSFT, and NVDA each returned HTTP 200 with `source=alpha_vantage`,
+`data_kind=end_of_day`, and reported trading date `2026-10-28`. Repeated AAPL
+returned `cache_hit=true` with unchanged quote values and the original `fetched_at`.
+These checks establish successful provider responses and cache reuse, not independent
+price accuracy, ongoing availability, or public-display permission. Historical data
+remains fictional; real-data Gemini research is untested. No provider payloads or
+prices were retained as fixtures.
+
+Automated coverage uses synthetic provider payloads and mocked HTTP only. Use only a free
+Alpha Vantage key; do not enable billing, buy a plan, or subscribe. The readiness
+review checked [free access](https://www.alphavantage.co/support/),
+[GLOBAL_QUOTE documentation](https://www.alphavantage.co/documentation/#latestprice),
+and [terms](https://www.alphavantage.co/terms_of_service/) on October 27, 2026:
+standard free access is 25 requests/day and the default quote is end-of-day.
+This adapter does not request premium real-time/delayed entitlements. If free access
+is rejected, stop and inspect the safe error; do not upgrade or retry repeatedly.
+
+`MARKET_DATA_PROVIDER=demo` remains the default and explicit fictional mode.
+`MARKET_DATA_PROVIDER=alpha_vantage` requires `ALPHA_VANTAGE_API_KEY` exclusively
+in backend environment variables. Never put it in React/VITE configuration, URLs
+entered in a browser, chat, logs, or committed files. Provider errors never fall
+back to fictional quotes.
+
+Use one backend worker, without reload, for this check. Successful quotes remain
+cached for six hours; concurrent callers share each symbol's pending request.
+The 20-attempt rolling-24-hour budget is process-local and counts failures. Restarting
+resets it; additional workers/processes and other uses of the same key consume provider
+quota independently. It is not an account-wide limit. Do not restart to evade quotas.
+A fresh process plus the sequence below needs at most three provider attempts on success.
+Avoid opening watchlist quote panels or using other clients during the check.
+
+Trading date is the provider's reported date, not the retrieval date. Old dates remain
+visible and valid; no exchange-calendar freshness guarantee is made. `fetched_at` records
+retrieval only and is preserved on cache hits. A six-hour cache can retain an older EOD
+quote after a newer one becomes available. The only accepted provenance pairs are
+`demo/fictional` and `alpha_vantage/end_of_day`. Research preserves those fields and
+cache status; frontend research validation rejects contradictory provenance/fictional flags
+or bundle modes. History remains separate fictional 2024–2025 data in either mode.
+Public demos must stay in fictional mode until display/redistribution rights are resolved.
+
+Manual verification procedure (not part of automated validation):
+
+1. Stop only your old MarketSim backend. Obtain a free key from the official free-key
+   page yourself. In a local **zsh** terminal, enter it at the hidden prompt below;
+   the value is not part of command history. Do not enable shell tracing.
+2. Start on loopback without loading any environment file:
+
+```zsh
+cd /Users/irvin/Documents/MarketSim/backend
+read -rs 'ALPHA_VANTAGE_API_KEY?Alpha Vantage free API key (hidden): '
+printf '\n'
+export ALPHA_VANTAGE_API_KEY
+MARKET_DATA_PROVIDER=alpha_vantage RESEARCH_ENABLED=false .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
+unset ALPHA_VANTAGE_API_KEY
+```
+
+3. In another terminal, run each command once, sequentially. Stop on an error;
+   do not treat it as a reason to purchase access or loop retries:
+
+```sh
+curl --fail-with-body http://127.0.0.1:8000/api/stocks/AAPL/quote
+curl --fail-with-body http://127.0.0.1:8000/api/stocks/MSFT/quote
+curl --fail-with-body http://127.0.0.1:8000/api/stocks/NVDA/quote
+curl --fail-with-body http://127.0.0.1:8000/api/stocks/AAPL/quote
+```
+
+4. Verify each successful response has the requested symbol, USD, `alpha_vantage`,
+   `end_of_day`, valid prices, a reported trading date and a timezone-aware fetch time.
+   The repeated AAPL response should have `cache_hit=true`, identical original
+   `fetched_at`, trading date and values. Do not infer freshness from HTTP 200.
+5. Stop the backend with Control-C; the following `unset` clears the key from that
+   shell. To return to explicit demo mode, use:
+
+```sh
+MARKET_DATA_PROVIDER=demo RESEARCH_ENABLED=false .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
+```
+
+No research submission, history-provider change, live test automation, or public
+real-data deployment is authorized by this sequence. The recorded manual result above
+is limited to that check; mocked tests cannot establish live entitlement or freshness.

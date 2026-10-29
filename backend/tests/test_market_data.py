@@ -4,8 +4,9 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 import httpx
+from pydantic import ValidationError
 
-from app.market_data import TTL, WINDOW, MarketData, QuoteError, parse_quote
+from app.market_data import TTL, WINDOW, MarketData, Quote, QuoteError, parse_quote
 
 NOW = datetime(2026, 10, 10, tzinfo=timezone.utc)
 KEY = 'sentinel-secret-key'
@@ -81,15 +82,26 @@ class MarketDataTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first.data_kind, 'end_of_day')
         self.assertNotEqual(first.latest_trading_day, first.fetched_at.date())
         self.assertFalse(first.cache_hit)
+        # Retrieval time advances, but a cached quote keeps all original metadata.
+        self.service.utcnow = lambda: datetime(2026, 10, 11, tzinfo=timezone.utc)
         self.now = TTL - 1
         cached = await self.service.get_quote('AAPL')
         self.assertTrue(cached.cache_hit)
         self.assertEqual(cached.fetched_at, first.fetched_at)
+        self.assertEqual(cached.model_dump(exclude={'cache_hit'}), first.model_dump(exclude={'cache_hit'}))
         self.assertEqual(self.calls, 1)
         self.assertEqual(len(self.service.attempts), 1)
         self.now = TTL
         self.assertFalse((await self.service.get_quote('AAPL')).cache_hit)
         self.assertEqual(self.calls, 2)
+
+    def test_provenance_pairs(self):
+        fields = parse_quote(payload(), 'AAPL', NOW).model_dump()
+        for source, kind in [('demo', 'fictional'), ('alpha_vantage', 'end_of_day')]:
+            Quote(**{**fields, 'source': source, 'data_kind': kind})
+        for source, kind in [('demo', 'end_of_day'), ('alpha_vantage', 'fictional')]:
+            with self.subTest(source=source), self.assertRaises(ValidationError):
+                Quote(**{**fields, 'source': source, 'data_kind': kind})
 
     async def test_concurrent_requests_share_success_and_failure(self):
         for fail in (False, True):

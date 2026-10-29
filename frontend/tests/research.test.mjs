@@ -17,13 +17,48 @@ const fixture = () => ({
     findings: [{ statement: 'AAPL reported daily range is 4 USD.', statement_origin: 'backend', evidence_ids: ['q1'] }] },
   quotes: { data_mode: 'fictional', label: 'FICTIONAL DEMO DATA', limitations: ['Fetch time is not market freshness.'],
     errors: [], evidence: [{ id: 'q1', fictional: true, quote: {
-      symbol: 'AAPL', currency: 'USD', price: 200, change_percent: 2.5,
+      symbol: 'AAPL', currency: 'USD', price: 200, change_percent: 2.5, cache_hit: false,
       latest_trading_day: '2026-01-02', fetched_at: '2026-01-03T00:00:00Z', source: 'demo', data_kind: 'fictional',
     } }] },
 })
 const originalFetch = globalThis.fetch
 afterEach(() => { globalThis.fetch = originalFetch })
 const signal = () => new AbortController().signal
+
+test('quote research rejects contradictory provenance, fictional flags and bundle modes', () => {
+  for (const [source, kind, fictional, mode] of [
+    ['demo', 'end_of_day', true, 'fictional'], ['alpha_vantage', 'fictional', false, 'provider_backed'],
+    ['demo', 'fictional', false, 'fictional'], ['alpha_vantage', 'end_of_day', true, 'provider_backed'],
+    ['demo', 'fictional', true, 'provider_backed'], ['alpha_vantage', 'end_of_day', false, 'mixed'],
+  ]) {
+    const data = fixture(), evidence = data.quotes.evidence[0]
+    Object.assign(evidence.quote, { source, data_kind: kind })
+    evidence.fictional = fictional; data.quotes.data_mode = mode
+    assert.throws(() => parseResearch(data), /invalid response/)
+  }
+  for (const cache_hit of [undefined, null, 'true', 1]) {
+    const data = fixture(); data.quotes.evidence[0].quote.cache_hit = cache_hit
+    assert.throws(() => parseResearch(data), /invalid response/)
+  }
+})
+
+test('provider research preserves old trading dates, original fetch time and cache status', () => {
+  const data = fixture(), evidence = data.quotes.evidence[0]
+  Object.assign(evidence.quote, { source: 'alpha_vantage', data_kind: 'end_of_day',
+    latest_trading_day: '2025-01-02', fetched_at: '2026-10-27T00:00:00Z' })
+  evidence.fictional = false; data.quotes.data_mode = 'provider_backed'
+  data.quotes.label = 'Provider-backed quotes; real-time freshness is not verified.'
+  for (const cached of [false, true]) {
+    evidence.quote.cache_hit = cached
+    const result = parseResearch(data)
+    assert.deepEqual(result.quotes.evidence[0], evidence)
+    assert.equal(result.quotes.label, data.quotes.label)
+    assert.deepEqual(result.quotes.limitations, data.quotes.limitations)
+  }
+  const demo = fixture().quotes.evidence[0]; demo.id = 'q2'; demo.quote.symbol = 'MSFT'
+  data.quotes.evidence.push(demo); data.quotes.data_mode = 'mixed'
+  assert.equal(parseResearch(data).quotes.data_mode, 'mixed')
+})
 function respond(body, status = 200) {
   globalThis.fetch = async () => new Response(JSON.stringify(body), { status })
 }

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, call
 
 import httpx
 from pydantic import ValidationError
+from test_market_data import payload
 
 from app.market_data import MarketData, Quote, QuoteError
 from app.research import QuotesInput, get_quotes
@@ -173,5 +174,37 @@ class ResearchTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual([r.value for r in first.calculations.ranges],
                                  [Decimal(10), Decimal(15), Decimal(13)])
                 self.assertEqual(first.calculations.ranking[0].evidence_ids, ['q3'])
+            finally:
+                await service.close()
+
+    async def test_provider_old_date_and_cached_evidence_keep_original_metadata(self):
+        calls = []
+
+        def transport(request):
+            calls.append(request)
+            data = payload()
+            data['Global Quote']['07. latest trading day'] = '2025-01-02'
+            return httpx.Response(200, json=data)
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
+            fetched = datetime(2026, 10, 27, tzinfo=timezone.utc)
+            service = MarketData(client, provider='alpha_vantage', api_key='synthetic',
+                                 utcnow=lambda: fetched)
+            try:
+                first = await get_quotes(service, {'symbols': ['AAPL']})
+                fetched = datetime(2026, 10, 28, tzinfo=timezone.utc)
+                second = await get_quotes(service, {'symbols': ['AAPL']})
+                self.assertEqual(len(calls), 1)
+                for result, cached in [(first, False), (second, True)]:
+                    evidence = result.model_dump(mode='json')['evidence'][0]
+                    self.assertEqual(result.data_mode, 'provider_backed')
+                    self.assertFalse(evidence['fictional'])
+                    self.assertEqual(evidence['quote']['source'], 'alpha_vantage')
+                    self.assertEqual(evidence['quote']['data_kind'], 'end_of_day')
+                    self.assertEqual(evidence['quote']['latest_trading_day'], '2025-01-02')
+                    self.assertEqual(evidence['quote']['fetched_at'], '2026-10-27T00:00:00Z')
+                    self.assertEqual(evidence['quote']['cache_hit'], cached)
+                    self.assertIn('Fetch time does not establish market-data freshness.', result.limitations)
+                    self.assertIn('not verified', result.label)
             finally:
                 await service.close()
