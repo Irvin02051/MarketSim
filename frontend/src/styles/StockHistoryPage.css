@@ -16,3 +16,8 @@
 .history-table th, .history-table td { text-align: left; padding: 8px; border-bottom: 1px solid #dde5e8; }
 .history-table th:last-child, .history-table td:last-child { text-align: right; }
 @media (max-width: 480px) { .history-controls [role=group] { width: 100%; } .history-page .dashboard-main { padding-inline: 12px; } }
+.history-provider-form { display: flex; flex-wrap: wrap; align-items: end; gap: 16px; }
+.history-provider-form label { display: grid; gap: 4px; font-weight: 650; }
+.history-provider-form input { min-height: 44px; padding: 10px; border: 1px solid #93aaa6; border-radius: 7px; font: inherit; max-width: 100%; }
+.history-provider-form input:focus-visible { outline: 3px solid #176b51; outline-offset: 4px; }
+.history-page button:disabled { cursor: wait; opacity: .65; }

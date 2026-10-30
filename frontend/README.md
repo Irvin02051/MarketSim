@@ -713,3 +713,88 @@ Backend quote mode does not change the fictional historical charts, historical r
 fixtures, or sample dashboard portfolio. Keep public demos in fictional mode until public
 display rights are resolved. Do not send real provider evidence to Gemini during the first
 quote check; real-evidence agent verification is a separate, later authorization.
+
+## Opt-in real-history chart (private local development)
+
+The `/stocks/:symbol` page still starts with **fictional demo history**, even when
+provider history is enabled. The existing 1W/1M/3M/1Y demo controls and fixed fixtures
+remain available. Only literal `VITE_REAL_HISTORY_ENABLED=true` shows the extra
+mode controls; the example defaults to false. Choosing **Provider history (private
+local)** does not fetch. Choose AAPL, MSFT or NVDA, enter dates, then explicitly
+press **Load provider history**. Provider mode has no 1Y/full-history preset.
+
+The initial provider range is calculated locally from UTC calendar dates: the
+previous 30 dates ending yesterday (on October 30, 2026: September 30–October 29).
+This requires no network and does not guarantee snapshot availability or market
+session completion. Dates must be exact YYYY-MM-DD, ordered, at most 90 calendar
+dates inclusive (January 1–March 31, 2026 is 90; April 1 would exceed the limit).
+Changing provider dates or stock clears obsolete results and requires another Load.
+Changing mode/unmount cancels pending work and discards late results. Returning to
+provider mode starts a fresh form. Duplicate submissions are blocked synchronously.
+
+The provider request uses the same `VITE_API_BASE_URL`, with
+`GET /api/stocks/{symbol}/history/provider?start_date=...&end_date=...`. It requires
+separate backend `REAL_HISTORY_ENABLED=true` and the backend-only Alpha Vantage key.
+No Supabase token, cookies or provider key is sent by this frontend helper. It uses
+`credentials: omit`, `cache: no-store`, rejects redirects, and shares the existing
+ten-second timeout/cancellation mechanism. No polling, prefetch or automatic retry
+is added. A range error shows validated available snapshot bounds; provider error
+text is never displayed. Missing/disabled configuration, quota, timeout, network,
+and malformed responses produce safe feedback with an explicit Load action.
+
+Provider responses have a separate typed validator. It checks matching symbol and
+requested range, alpha_vantage/end_of_day/unadjusted provenance, actual/available
+bounds, ordered unique valid dates, finite positive consistent OHLC, nullable
+nonnegative integer volume, status/coverage, timezone, retrieval time and cache flag.
+Unsafe-integer volumes are rejected rather than rounded. No malformed observations
+are repaired or missing dates filled; fictional metadata is rejected on real results.
+Unknown timezone remains explicit. A browser unable to recognize supplied timezone
+metadata rejects that response rather than inventing a timezone.
+
+The chart and accessible expandable table use UTC date-only observations, with
+mode-specific captions. Provider results show Alpha Vantage end-of-day source,
+raw/unadjusted limitations, requested/available/returned ranges, count, retrieval
+(not freshness) timestamp, cache status, timezone and backend limitations. Empty
+results show a message; a single observation remains a visible chart point/table row.
+Splits and dividends are not handled. These are descriptive prices, not predictions
+or recommendations. Real history remains excluded from metrics and Gemini research.
+
+**Neither flag is authentication or public-display permission.** Keep public demos
+fictional with both flags disabled. This opt-in is for private local testing only;
+keep the backend bound to `127.0.0.1`, use one worker, and do not expose it through a
+tunnel. Provider display, cache-retention and external-LLM rights remain unresolved.
+The existing shared process-local quote/history budget and cache are unchanged.
+
+### Later manual browser check
+
+No live check was run during this frontend milestone. After opting in locally:
+
+1. Start the backend using its documented silent-key-prompt procedure, with
+   `REAL_HISTORY_ENABLED=true`, `MARKET_DATA_PROVIDER=demo`, `RESEARCH_ENABLED=false`,
+   one worker and `--host 127.0.0.1`. Keep the key only in backend configuration.
+2. In a local frontend dev process, set `VITE_REAL_HISTORY_ENABLED=true` and
+   `VITE_API_BASE_URL=http://127.0.0.1:8000`; restart Vite after changing configuration.
+   The existing environment-isolated Vite config procedure above can also be used
+   for dev (`npm run dev -- --config "$validation_config" --host 127.0.0.1`), passing
+   those two public variables explicitly in the otherwise clean environment.
+3. Open `/stocks/AAPL`. Confirm demo is still selected. In browser Network tools,
+   select provider mode and edit dates: there must be no `/history/provider` call.
+4. Use an explicit supported recent range, for example October 1–23, 2026, then
+   click Load once. That window moves out of the compact snapshot over time. Stop
+   on quota/provider errors; review available bounds on a range error before retrying.
+5. Verify source/adjustment/range/count labels, expand the table and compare tooltip
+   date/close values. If successful, a deliberate repeat may verify cached data and
+   unchanged retrieval time. Never assume retrieval time means fresh market data.
+6. Check keyboard focus, loading/disabled feedback, status announcements and a 320px
+   viewport. Return to demo and confirm its fictional labels/ranges remain intact.
+   Disable the frontend flag and confirm provider controls disappear.
+7. Use browser mocks for delayed responses, mode/input changes during loading,
+   disabled backend, quota, malformed/range errors, empty/single observations and
+   stale completions. These failure scenarios need not spend real provider quota.
+
+Tests use self-authored fixtures and mocked fetch. They cover helpers, the controller
+used by form handlers, actual component handlers with mocked hooks, and static
+chart/table renders with mocked Recharts. These are not mounted browser tests and
+do not establish live prices, browser accessibility or provider permissions.
+Validation uses `npm test`, `npm run lint`, and the fail-fast environment-isolated
+production build documented above. No backend/database files or dependencies change.
