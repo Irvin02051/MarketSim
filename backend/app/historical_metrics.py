@@ -1,12 +1,13 @@
 """Pure descriptive calculations over supplied history, never forecasts."""
 
+from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 from itertools import pairwise
 from typing import Literal
 
 from pydantic import model_validator
 
-from app.historical_data import DateRange, HistoricalResult, HistoryModel
+from app.historical_data import DailyBar, DateRange, HistoricalResult, HistoryModel
 
 OUTPUT_QUANTUM = Decimal('0.000001')
 # Positive binary64 closes convert to decimals in [5e-324, 1.7976931348623157e308].
@@ -45,18 +46,17 @@ class HistoricalMetrics(HistoryModel):
     limitations: tuple[str, ...]
 
 
-def calculate_historical_metrics(history: HistoricalResult) -> HistoricalMetrics:
-    """Calculate on validated input only; no retrieval, date filling, or mutation.
+@dataclass(frozen=True)
+class _CalculatedMetrics:
+    price_change: HistoricalMetric
+    sma_20: HistoricalMetric
+    sma_50: HistoricalMetric
+    return_stddev: HistoricalMetric
+    return_count: int
 
-    Decimal(str(close)), a 680-significant-digit local context, and no intermediate
-    quantization are used. Final values round half-even to six decimal places and
-    serialize as strings. Unavailable metrics have null values/windows; their
-    observation_count reports the available closes (not a completed window).
-    """
-    if not isinstance(history, HistoricalResult):
-        raise TypeError('Expected a validated HistoricalResult.')
-    history = HistoricalResult.model_validate(history)
-    bars = history.bars
+
+def _calculate_metrics(bars: tuple[DailyBar, ...]) -> _CalculatedMetrics:
+    """Arithmetic only; callers must validate their own provenance and bars."""
     closes = [Decimal(str(bar.close)) for bar in bars]
 
     def metric(required: int, unit: Literal['USD', 'percent'], value: Decimal | None,
@@ -92,6 +92,22 @@ def calculate_historical_metrics(history: HistoricalResult) -> HistoricalMetrics
             volatility = variance.sqrt() * 100
         return_volatility = metric(21, 'percent', volatility, 21)
 
+    return _CalculatedMetrics(price_change, sma_20, sma_50, return_volatility,
+                              20 if volatility is not None else 0)
+
+
+def calculate_historical_metrics(history: HistoricalResult) -> HistoricalMetrics:
+    """Calculate on validated input only; no retrieval, date filling, or mutation.
+
+    Decimal(str(close)), a 680-significant-digit local context, and no intermediate
+    quantization are used. Final values round half-even to six decimal places and
+    serialize as strings. Unavailable metrics have null values/windows; their
+    observation_count reports the available closes (not a completed window).
+    """
+    if not isinstance(history, HistoricalResult):
+        raise TypeError('Expected a validated HistoricalResult.')
+    history = HistoricalResult.model_validate(history)
+    calculated = _calculate_metrics(history.bars)
     limitations = history.limitations + (
         'Descriptive backend calculations over supplied observations, not forecasts or trading signals.',
         'Price change is not dividend-inclusive total return.',
@@ -103,7 +119,8 @@ def calculate_historical_metrics(history: HistoricalResult) -> HistoricalMetrics
     if history.coverage != 'within_fixture':
         limitations += ('Requested range is not fully covered by fixtures; metrics use only supplied observations.',)
     return HistoricalMetrics(
-        history=history, price_change=price_change, sma_20=sma_20, sma_50=sma_50,
-        adjacent_return_volatility_20=return_volatility,
-        volatility_return_count=20 if volatility is not None else 0, limitations=limitations,
+        history=history, price_change=calculated.price_change,
+        sma_20=calculated.sma_20, sma_50=calculated.sma_50,
+        adjacent_return_volatility_20=calculated.return_stddev,
+        volatility_return_count=calculated.return_count, limitations=limitations,
     )

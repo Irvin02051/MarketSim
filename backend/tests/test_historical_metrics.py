@@ -6,6 +6,8 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_UP, Decimal, Inexact, InvalidOperation, localcontext
 from unittest.mock import patch
 
+from pydantic import ValidationError
+
 from app.historical_data import DailyBar, DateRange, HistoricalResult
 from app.historical_metrics import calculate_historical_metrics
 
@@ -189,6 +191,13 @@ class HistoricalMetricsTests(unittest.TestCase):
     def test_requires_validated_history_model(self):
         with self.assertRaises(TypeError):
             calculate_historical_metrics({'bars': []})
+
+    def test_fictional_provenance_still_revalidated_before_shared_arithmetic(self):
+        source = history([100, 125])
+        for field, value in [('source', 'alpha_vantage'), ('data_kind', 'end_of_day'),
+                             ('adjustment_basis', 'unadjusted')]:
+            with self.subTest(field=field), self.assertRaises(ValidationError):
+                calculate_historical_metrics(source.model_copy(update={field: value}))
 
 
 if __name__ == '__main__':
