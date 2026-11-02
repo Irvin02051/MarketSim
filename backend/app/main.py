@@ -20,6 +20,7 @@ from app.real_history import (
     HistoryRequest,
     RealHistoryResult,
 )
+from app.real_history_metrics import RealHistoryMetrics, calculate_real_history_metrics
 from app.research_agent import AgentInput, AgentResult, ResearchAgent
 from app.research_explanation import ResearchExplanation, ResearchInput, ResearchResult
 from app.research_explanation import explanation as research_outcome
@@ -126,19 +127,8 @@ def get_stock_history(
     return get_history(validated)
 
 
-@app.get('/api/stocks/{symbol}/history/provider', response_model=RealHistoryResult, responses={
-    422: {'description': 'Invalid input or range unavailable; available_range supplied when known'},
-    429: {'description': 'Local attempt budget or provider quota exhausted'},
-    502: {'description': 'Provider HTTP, connection, malformed data or oversized response error'},
-    503: {'description': 'Provider history disabled or configuration unavailable'},
-    504: {'description': 'Provider request timed out'},
-})
-async def get_provider_history(
-    symbol: str, request: Request,
-    start_date: Annotated[str, Query(pattern=r'^[0-9]{4}-[0-9]{2}-[0-9]{2}$', max_length=10)],
-    end_date: Annotated[str, Query(pattern=r'^[0-9]{4}-[0-9]{2}-[0-9]{2}$', max_length=10)],
-):
-    """Opt-in raw daily history for private local use; this flag is not authentication."""
+async def _provider_history(symbol: str, request: Request, start_date: str, end_date: str):
+    """Shared validated retrieval and safe service errors for both provider routes."""
     if set(request.query_params) != {'start_date', 'end_date'} or any(
         len(request.query_params.getlist(name)) != 1 for name in ('start_date', 'end_date')
     ):
@@ -162,6 +152,42 @@ async def get_provider_history(
         if error.available_range is not None:
             content['available_range'] = error.available_range.model_dump(mode='json')
         return JSONResponse(status_code=error.status, content=content)
+
+
+@app.get('/api/stocks/{symbol}/history/provider', response_model=RealHistoryResult, responses={
+    422: {'description': 'Invalid input or range unavailable; available_range supplied when known'},
+    429: {'description': 'Local attempt budget or provider quota exhausted'},
+    502: {'description': 'Provider HTTP, connection, malformed data or oversized response error'},
+    503: {'description': 'Provider history disabled or configuration unavailable'},
+    504: {'description': 'Provider request timed out'},
+})
+async def get_provider_history(
+    symbol: str, request: Request,
+    start_date: Annotated[str, Query(pattern=r'^[0-9]{4}-[0-9]{2}-[0-9]{2}$', max_length=10)],
+    end_date: Annotated[str, Query(pattern=r'^[0-9]{4}-[0-9]{2}-[0-9]{2}$', max_length=10)],
+):
+    """Opt-in raw daily history for private local use; this flag is not authentication."""
+    return await _provider_history(symbol, request, start_date, end_date)
+
+
+@app.get('/api/stocks/{symbol}/history/provider/metrics', response_model=RealHistoryMetrics, responses={
+    422: {'description': 'Invalid input or range unavailable; available_range supplied when known'},
+    429: {'description': 'Local attempt budget or provider quota exhausted'},
+    502: {'description': 'Provider HTTP, connection, malformed data or oversized response error'},
+    503: {'description': 'Provider history disabled or configuration unavailable'},
+    504: {'description': 'Provider request timed out'},
+})
+async def get_provider_history_metrics(
+    symbol: str, request: Request,
+    start_date: Annotated[str, Query(pattern=r'^[0-9]{4}-[0-9]{2}-[0-9]{2}$', max_length=10)],
+    end_date: Annotated[str, Query(pattern=r'^[0-9]{4}-[0-9]{2}-[0-9]{2}$', max_length=10)],
+):
+    """Raw descriptive statistics only; corporate actions and completeness are unchecked."""
+    history = await _provider_history(symbol, request, start_date, end_date)
+    if isinstance(history, JSONResponse):
+        return history
+    # Outside input/service error handling: calculator defects are server errors.
+    return calculate_real_history_metrics(history)
 
 
 @app.post('/api/research', response_model=ResearchResult, responses={
