@@ -565,6 +565,64 @@ USD 100 yield price change `"0.000000"` percent, SMA20/SMA50 `"100.000000"` USD,
 and adjacent-observation return volatility `"0.000000"` percent. All four are
 available. This is a hand-authored example, not actual market performance.
 
+## Separate raw real-history metrics foundation
+
+`app.real_history_metrics.calculate_real_history_metrics(history)` accepts only a
+`RealHistoryResult` and fully revalidates it, including nested models and instances
+created with validation bypasses. Provenance must be
+`alpha_vantage / end_of_day / unadjusted / daily`. This is a pure internal function:
+no retrieval, configuration, current-time timestamp, mutation, or automatic extra
+bars. Existing endpoints, charts, historical agent tools and Gemini behavior are
+unchanged. The existing `calculate_historical_metrics()` remains fictional-only;
+both calculators reuse a small private arithmetic/window helper.
+
+| Field | Calculation over supplied raw closes | Minimum observations | Unit |
+| --- | --- | --- | --- |
+| `raw_price_change` | `(last / first - 1) * 100` | 2 | percent |
+| `raw_sma_20` | Mean of latest 20 closes | 20 | USD |
+| `raw_sma_50` | Mean of latest 50 closes | 50 | USD |
+| `raw_return_sample_stddev_20` | Latest 20 adjacent simple returns from 21 closes; sample standard deviation (denominator 19) times 100 | 21 | percent |
+
+The typed, compact `RealHistoryMetrics` result has `origin="backend"` and
+`calculation_basis="raw_closing_prices"`. It preserves symbol, currency, source,
+data kind, adjustment basis, interval, requested/available/returned ranges, original
+`fetched_at`, `cache_hit`, provider timezone, coverage and status. It includes the
+supplied `observation_count`, `calendar_completeness="not_verified"`, and
+`corporate_actions_checked=false`; no OHLCV arrays are duplicated.
+
+Each metric uses the existing availability/value/unit/window/count/reason shape.
+Actual observation dates define its window. Insufficient history yields
+`unavailable`, null value/window and a reason with the supplied count, never a
+substituted zero. `return_count` is 20 when variability is available, otherwise 0.
+Empty input remains explicitly empty. Calendar gaps are not filled or interpreted
+as zero returns, and snapshot bounds do not establish exchange-calendar completeness.
+
+Arithmetic retains `Decimal(str(close))`, the isolated **680-digit** context,
+unrounded intermediates, six-decimal half-even output and normalized zero described
+above. Decimal values serialize as strings. This does not recover provider-string
+precision lost during the existing conversion to float.
+
+These are raw descriptive statistics, not forecasts or trading signals. Raw price
+change is **not total return or shareholder performance**. Moving averages can mix
+pre/post-split price scales. Raw-return variability is **not a reliable investment-risk
+measure** and is not annualized. Splits and dividends are neither checked nor handled;
+the function does not infer split factors or correct discontinuities. Absence of a
+large jump does not establish absence of corporate actions.
+
+`source_limitations` preserves the retrieval service's statements verbatim, separately
+from `calculation_limitations`. In particular, its statement that no real-data metrics
+are calculated describes the retrieval service and existing fictional-only pipeline;
+this separate calculator does not widen that pipeline's boundary. Public-display and
+external-LLM permissions remain unresolved; this milestone adds neither integration.
+
+Self-authored synthetic example, **not provider data or an actual investment result**:
+ten closes at 100 followed by eleven at 50 produce `raw_price_change="-50.000000"`,
+`raw_sma_20="72.500000"`, unavailable SMA50, and
+`raw_return_sample_stddev_20="11.180340"`. Interpreting the discontinuity as a
+hypothetical 2:1 split demonstrates retained raw arithmetic; it does not establish
+a 50% investor loss or equivalent investment risk. The calculator neither detects
+nor adjusts this hypothetical split.
+
 ## Internal historical-metrics research tool
 
 `app.historical_research.get_historical_metrics(request)` is a synchronous internal
