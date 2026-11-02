@@ -1218,3 +1218,81 @@ Stop the server with Ctrl-C; the subshell removes its key. If a key was previous
 exported in the parent shell, run `unset ALPHA_VANTAGE_API_KEY` there too. The manual
 endpoint result above is separate from the earlier internal-service check; no
 additional live requests were made while recording it. No Gemini calls are needed.
+
+## Opt-in raw real-history metrics endpoint
+
+`GET /api/stocks/{symbol}/history/provider/metrics?start_date=2026-10-01&end_date=2026-10-30`
+returns the existing typed `RealHistoryMetrics` result. It uses the same startup
+setting as provider history: only literal `REAL_HISTORY_ENABLED=true` enables it.
+Missing provider configuration returns safe 503 without breaking public/demo startup.
+This flag is not authentication or public-display permission. Keep it disabled in
+public deployments; private local testing binds to `127.0.0.1` with one worker.
+
+Both dates are required exactly once in exact YYYY-MM-DD format, ordered, with at
+most 90 calendar days inclusive. Only AAPL/MSFT/NVDA are supported (case normalized).
+Unknown/repeated parameters are rejected. Validation precedes enablement and any
+provider access, using the same handling as `/history/provider`.
+
+| HTTP | Meaning |
+| --- | --- |
+| 200 | Calculated result, including empty history or unavailable metrics when observations are insufficient. |
+| 422 | Invalid input, or requested range outside snapshot bounds; the latter includes top-level `available_range`. |
+| 429 | Shared local attempt budget or provider quota exhausted. |
+| 502 | Upstream HTTP/connection, malformed data or oversized-response failure. |
+| 503 | Disabled, missing configuration, or unavailable service. |
+| 504 | Upstream timeout or fetch deadline exceeded. |
+
+Service errors retain the safe `detail` response described above; no raw provider
+bodies, URLs, credentials or exception details are exposed. Unexpected calculator
+defects remain server errors, not caller validation failures.
+
+The route retrieves history once from the lifespan-managed service, then calls
+`calculate_real_history_metrics()`. It shares the HTTPX client, snapshot cache,
+request coalescing and quote/history attempt budget. Calculation consumes no provider
+attempts and fetches no extra observations for SMA/variability windows. Matching
+cached history is reused with its original `fetched_at`; there are no retries.
+
+The response includes raw-statistic names, Decimal strings, units, actual observation
+windows/counts, provenance, requested/available/returned ranges, original fetch time,
+cache metadata, and separate source/calculation limitations. It does not duplicate
+bars or fabricate adjusted prices. Insufficient metrics have null values/windows and
+explicit reasons, never substituted zeros. Raw price change is not total return;
+corporate actions are unchecked. Raw-return variability is not a reliable
+investment-risk measure and is not annualized. Calendar gaps are not filled, and
+snapshot coverage does not prove exchange-calendar completeness.
+
+The existing fictional `/history` and provider `/history/provider` contracts remain
+unchanged. This milestone does not change frontend or Gemini integration; the
+historical agent tool remains fictional. The earlier pure-calculator description
+refers to the function itself; this route now provides its opt-in HTTP access.
+
+For a **later separately authorized manual check**, use the silent-key local startup
+command in the provider-history section above (research disabled, demo quotes, no
+actual environment files). In another terminal, run the following history request
+once, then the metrics request only if history succeeded. Do not save provider bars:
+
+```zsh
+curl --silent --show-error --fail-with-body \
+  'http://127.0.0.1:8000/api/stocks/AAPL/history/provider?start_date=2026-10-01&end_date=2026-10-30'
+
+curl --silent --show-error --fail-with-body \
+  'http://127.0.0.1:8000/api/stocks/AAPL/history/provider/metrics?start_date=2026-10-01&end_date=2026-10-30'
+```
+
+With the same running service/cache, verify the metrics result has `cache_hit=true`,
+the same `fetched_at` and ranges as history, unadjusted Alpha Vantage provenance,
+string values and explicit unavailable reasons for any insufficient windows. Stop on
+failure; do not automatically retry. The compact snapshot moves over time, so this
+explicit window is not permanently valid; review available bounds if rejected.
+
+### Manual metrics endpoint verification — November 2, 2026
+
+The user verified AAPL history for October 1–30, 2026, returning 22 observations.
+The subsequent metrics request returned `cache_hit=true` with the same `fetched_at`
+as history. Provenance, ranges, string metric values, and explicit unavailable
+SMA50 were preserved.
+
+This verifies one endpoint/cache flow, not independent provider accuracy,
+corporate-action adjustment, other symbols, or display permissions. No raw provider
+bars or credentials are stored in this record. No additional live requests were
+made while recording these user-reported results.

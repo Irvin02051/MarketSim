@@ -14,6 +14,8 @@ from app.gemini_client import GeminiClient
 from app.historical_data import get_history
 from app.main import app
 from app.market_data import MarketData
+from app.real_history import RealHistoryResult
+from app.real_history_metrics import calculate_real_history_metrics
 from app.research_explanation import ModelFailure
 
 
@@ -672,7 +674,7 @@ class ProviderHistoryApiTests(unittest.TestCase):
                 with self.subTest(query=query):
                     self.assertEqual(client.get(self.path, params=query).status_code, 422)
             for symbol in ['TSLA', 'A1', 'PRIVATE_SENTINEL']:
-                response = client.get(f'/api/stocks/{symbol}/history/provider', params=self.dates)
+                response = client.get(self.path.replace('AAPL', symbol), params=self.dates)
                 self.assertEqual(response.status_code, 422)
                 self.assertNotIn('PRIVATE_SENTINEL', response.text)
             history.assert_not_called()
@@ -747,3 +749,95 @@ class ProviderHistoryApiTests(unittest.TestCase):
             }).status_code, 503)
             self.assertEqual(client.post('/api/research/agent', json={'question': 'Compare'}).status_code, 503)
             provider.assert_not_called()
+
+
+class ProviderHistoryMetricsApiTests(unittest.TestCase):
+    path = '/api/stocks/AAPL/history/provider/metrics'
+    # Exercise the same contracts against both routes without copying fixtures or
+    # error/validation cases. setUp forbids all unmocked HTTP transports.
+    setUp = ProviderHistoryApiTests.setUp
+    test_disabled_no_calls = ProviderHistoryApiTests.test_default_disabled_independent_of_key_and_quote_mode
+    test_missing_configuration = ProviderHistoryApiTests.test_missing_key_does_not_break_startup_or_spend_budget
+    test_strict_validation = ProviderHistoryApiTests.test_invalid_inputs_never_reach_service
+    test_safe_errors_and_budget = ProviderHistoryApiTests.test_safe_provider_errors_and_budget_mapping
+
+    def test_actual_calculator_output_and_history_cache_reuse(self):
+        from test_real_history import payload
+
+        transport = httpx.MockTransport(lambda req: httpx.Response(200, json=payload()))
+        with patch('httpx.AsyncHTTPTransport.handle_async_request',
+                   side_effect=transport.handle_async_request) as upstream, TestClient(app) as client:
+            service = app.state.historical_data
+            self.assertIs(service.client, app.state.market_data.client)
+            self.assertIs(service.budget, app.state.market_data.budget)
+            first = client.get('/api/stocks/AAPL/history/provider', params=self.dates)
+            self.assertEqual(first.status_code, 200)
+            history = RealHistoryResult.model_validate_json(first.content)
+            self.assertFalse(history.cache_hit)
+            self.assertIsNone(history.bars[0].volume)
+            expected = calculate_real_history_metrics(history.model_copy(update={'cache_hit': True}))
+            # Calculation and a cached request remain usable even after the shared
+            # attempt budget is full. No warm-up fetch or calculation attempt.
+            for _ in range(19):
+                service.budget.reserve()
+            with patch.object(service, 'get_history', wraps=service.get_history) as retrieve:
+                response = client.get(self.path.replace('AAPL', 'aapl'), params=self.dates)
+                retrieve.assert_awaited_once()
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), expected.model_dump(mode='json'))
+            self.assertEqual(response.json()['fetched_at'], first.json()['fetched_at'])
+            self.assertTrue(response.json()['cache_hit'])
+            self.assertEqual(response.json()['raw_price_change']['value'], '1.000000')
+            self.assertNotIn('bars', response.json())
+            upstream.assert_awaited_once()
+            self.assertEqual(len(service.budget.attempts), 20)
+            schema = client.get('/openapi.json').json()
+            route = schema['paths']['/api/stocks/{symbol}/history/provider/metrics']['get']
+            self.assertEqual(route['responses']['200']['content']['application/json']['schema'],
+                             {'$ref': '#/components/schemas/RealHistoryMetrics'})
+            self.assertTrue({'422', '429', '502', '503', '504'} <= route['responses'].keys())
+            queries = {item['name']: item for item in route['parameters'] if item['in'] == 'query'}
+            self.assertEqual(set(queries), {'start_date', 'end_date'})
+            self.assertTrue(all(item['required'] for item in queries.values()))
+
+    def test_empty_short_and_unavailable_snapshot(self):
+        from test_real_history import payload
+
+        transport = httpx.MockTransport(lambda req: httpx.Response(200, json=payload()))
+        with patch('httpx.AsyncHTTPTransport.handle_async_request',
+                   side_effect=transport.handle_async_request) as upstream, TestClient(app) as client:
+            for start, end, count in [('2026-10-24', '2026-10-25', 0),
+                                      ('2026-10-23', '2026-10-23', 1),
+                                      ('2026-10-23', '2026-10-28', 3)]:
+                response = client.get(self.path, params={'start_date': start, 'end_date': end})
+                self.assertEqual(response.status_code, 200)
+                data = response.json()
+                self.assertEqual(data['observation_count'], count)
+                self.assertEqual(data['status'], 'ok' if count else 'empty')
+                for field in ['raw_price_change', 'raw_sma_20', 'raw_sma_50', 'raw_return_sample_stddev_20']:
+                    metric = data[field]
+                    if count < metric['required_observations']:
+                        self.assertEqual(metric['status'], 'unavailable')
+                        self.assertIsNone(metric['value'])
+                        self.assertIsNone(metric['window'])
+                        self.assertTrue(metric['reason'])
+                self.assertEqual(data['return_count'], 0)
+            response = client.get(self.path, params={**self.dates, 'start_date': '2026-10-01'})
+            self.assertEqual(response.status_code, 422)
+            self.assertEqual(response.json(), {
+                'detail': 'Requested range is unavailable in the compact snapshot.',
+                'available_range': {'start': '2026-10-23', 'end': '2026-10-28'},
+            })
+            upstream.assert_awaited_once()
+
+    def test_calculator_defect_is_server_error_not_user_validation(self):
+        from test_real_history import payload
+
+        transport = httpx.MockTransport(lambda req: httpx.Response(200, json=payload()))
+        with patch('httpx.AsyncHTTPTransport.handle_async_request',
+                   side_effect=transport.handle_async_request), TestClient(app, raise_server_exceptions=False) as client:
+            for defect in [ValueError('PRIVATE_SENTINEL'), TypeError('PRIVATE_SENTINEL')]:
+                with patch('app.main.calculate_real_history_metrics', side_effect=defect):
+                    response = client.get(self.path, params=self.dates)
+                    self.assertEqual(response.status_code, 500)
+                    self.assertNotIn('PRIVATE_SENTINEL', response.text)
