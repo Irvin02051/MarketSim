@@ -285,6 +285,7 @@ function componentHarness(flag = 'true') {
     }, useRef: () => ({ current: null }), useEffect: (effect) => { cleanups.push(effect) } }
     if (name === '../lib/history') return history
     if (name === '../components/HistoryChart') return () => null
+    if (name === '../components/RealHistoryMetrics') return () => null
     if (name === 'react-router-dom') return { useParams: () => ({ symbol: 'AAPL' }), useNavigate: () => () => {},
       Link: ({ to, children }) => createElement('a', { href: to }, children) }
     if (name.endsWith('.css')) return {}

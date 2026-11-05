@@ -26,7 +26,9 @@ FETCH_DEADLINE = 10.0
 MAX_BODY_BYTES = 256 * 1024
 LIMITATIONS = (
     'Raw, unadjusted observations; splits and dividends are not handled or detected.',
-    'Not suitable for the existing metrics pipeline; no real-data metrics are calculated.',
+    ('Unadjusted history is excluded from the fictional-history metrics and '
+     'Gemini research pipeline. Separate raw-price descriptive statistics are '
+     'available on explicit request.'),
     'Compact snapshot only; within-snapshot coverage does not establish exchange-calendar completeness.',
     'Missing dates are not filled; missing volume remains null.',
     'Retrieval time and provider metadata do not establish freshness or final session completion.',

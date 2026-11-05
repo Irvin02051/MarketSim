@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import HistoryChart from '../components/HistoryChart'
+import RealHistoryMetrics from '../components/RealHistoryMetrics'
 import { DEMO_HISTORY_END, HISTORY_RANGES, HISTORY_SYMBOLS, HistoryError, historyDates, historySymbol, requestHistory, utcDate,
   createProviderHistoryController, initialProviderDates, providerHistoryEnabled } from '../lib/history'
 import type { HistoryRange, HistoryResult, HistorySymbol, ProviderHistoryState } from '../lib/history'
@@ -51,6 +52,7 @@ function HistoryRequest({ symbol, range }: { symbol: HistorySymbol; range: Histo
 }
 
 function ProviderHistory({ symbol }: { symbol: HistorySymbol }) {
+  const [generation, setGeneration] = useState(0)
   const [dates, setDates] = useState(() => initialProviderDates())
   const [state, setState] = useState<ProviderHistoryState>({ kind: 'idle' })
   const [controller] = useState(() => createProviderHistoryController(true, setState))
@@ -69,6 +71,8 @@ function ProviderHistory({ symbol }: { symbol: HistorySymbol }) {
       Changing selections clears results; only Load sends a request.</p>
     <form className="history-provider-form" noValidate onSubmit={(event) => {
       event.preventDefault()
+      if (state.kind === 'loading') return
+      setGeneration((value) => value + 1)
       void controller.load(import.meta.env.VITE_API_BASE_URL, symbol, dates)
     }}>
       <label>Start date<input type="date" value={dates.start} required aria-describedby="provider-date-help"
@@ -92,6 +96,7 @@ function ProviderHistory({ symbol }: { symbol: HistorySymbol }) {
       <p className="history-note">Fetched at: {result.fetched_at} (retrieval time, not market freshness)</p>
       <p className="history-note">Cache: {result.cache_hit ? 'Reused cached snapshot' : 'Newly fetched snapshot'} · Provider timezone: {result.provider_timezone ?? 'Unknown'}</p>
       <ul className="history-note">{result.limitations.map((item, i) => <li key={i}>{item}</li>)}</ul>
+      <RealHistoryMetrics key={generation} history={result} base={import.meta.env.VITE_API_BASE_URL} />
     </>}
   </section>
 }
@@ -116,7 +121,7 @@ export default function StockHistoryPage() {
       <div className="dashboard-intro"><p className="dashboard-kicker">{real ? 'PRIVATE LOCAL PROVIDER HISTORY' : 'EXPLORE THE DEMO'}</p>
         <h1 ref={heading} tabIndex={-1}>{symbol ? `${symbol} price history` : 'Unsupported stock'}</h1>
         {real ? <><p className="history-banner">Alpha Vantage · End-of-day · Raw/unadjusted history</p>
-          <p>Private local testing only. Not recommendations or forecasts. Charts do not enable real-data metrics or Gemini research.</p></>
+          <p>Private local testing only. Not recommendations or forecasts. Raw-price metrics load only on request; historical Gemini research remains fictional.</p></>
           : <><p className="history-banner">Fictional historical demo · ranges end {anchorLabel}.</p>
             <p>Separate historical fixtures, not the dashboard’s sample prices or current market quotes.</p></>}
       </div>
