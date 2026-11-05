@@ -798,3 +798,76 @@ chart/table renders with mocked Recharts. These are not mounted browser tests an
 do not establish live prices, browser accessibility or provider permissions.
 Validation uses `npm test`, `npm run lint`, and the fail-fast environment-isolated
 production build documented above. No backend/database files or dependencies change.
+
+## Explicit raw-price statistics for provider history
+
+With the existing public `VITE_REAL_HISTORY_ENABLED=true` opt-in and backend
+`REAL_HISTORY_ENABLED=true`, load provider history on `/stocks/AAPL`, then click
+**Load raw-price metrics**. Existing `VITE_API_BASE_URL` configuration is reused.
+Alpha Vantage credentials remain backend-only. These settings require restarting
+local development processes; no new configuration or dependencies were added.
+The opt-ins are not authentication or public-display permission. Use private local
+servers; public deployments should remain in fictional mode pending permissions.
+
+The button requests `/api/stocks/{symbol}/history/provider/metrics` with the loaded
+chart's exact requested dates. There is no metrics request on mount, mode entry,
+input edits, or history completion, and no polling or automatic retry. The backend
+reuses its history cache when available; expired cache may consume another provider
+attempt. Loading and failures leave the chart visible. Retry requires another click.
+The request sends no cookies or Supabase token, rejects redirects, and has a ten-second
+bound covering fetch and response decoding, with cancellation on invalidation.
+
+Runtime validation checks provenance, raw calculation basis, metadata, availability,
+units, counts, actual windows and six-decimal strings. Metrics must match the chart's
+symbol, provenance, requested/available/returned ranges, observation count and exact
+source `fetched_at`; window dates must also match its supplied observations. Different
+`cache_hit` values are expected when history warms the cache. A mismatch suppresses
+the metrics and asks the user to reload history and explicitly load metrics again;
+neither endpoint refreshes automatically. Date/mode/symbol changes, chart reloads,
+replacement results and unmount discard the previous metrics generation and cancel
+pending work. Late successes and failures cannot populate the replacement chart.
+
+The panel displays backend strings verbatim, never converting metric values to
+JavaScript numbers or calculating metrics locally. Unavailable values/windows stay
+null and show their reason. Each metric displays its observation window/count, with
+return count for variability. Source fetch time and cache feedback stay visible;
+source limitations and calculation limitations appear in separate expandable details.
+Source statements about the existing fictional pipeline describe retrieval; the
+separate raw calculator does not connect that pipeline to real data.
+
+Prices are unadjusted and corporate actions unchecked. Raw closing-price change is
+not total return or shareholder performance; SMA windows may mix split price scales.
+Raw-return sample standard deviation is not annualized and is not a reliable
+investment-risk measure. These describe supplied history, not predictions or signals.
+Snapshot bounds do not establish calendar completeness. Fictional mode, chart behavior
+and historical Gemini research remain unchanged.
+
+Tests use self-authored synthetic responses, mocked fetch/controller calls, real
+handler calls with mocked React hooks, and static rendering. They are **not mounted
+browser tests**. Run frontend tests/lint and the fail-fast environment-isolated build
+above; no live provider request is part of validation.
+
+Later manual browser checks (not performed during implementation):
+
+1. Start the locally configured backend on `127.0.0.1:8000` with one worker,
+   `REAL_HISTORY_ENABLED=true`, `MARKET_DATA_PROVIDER=demo`, and `RESEARCH_ENABLED=false`.
+   Keep its provider key backend-only. Start the frontend with its existing opt-in
+   and API URL configuration. Never paste keys into browser fields or chat.
+2. Open `/stocks/AAPL`. Confirm fictional mode is unchanged. Enter provider mode
+   and choose November 2–4, 2026, then explicitly load history. This recent window
+   is illustrative; compact snapshot bounds move. Stop on quota/provider errors.
+3. In browser Network tools, verify no metrics call occurs until **Load raw-price
+   metrics** is clicked. Click once and verify the endpoint uses the loaded symbol
+   and dates, shows matching provenance/fetch time, exact strings and unavailable
+   SMA/variability reasons for this short window. No automatic retries should occur.
+4. Confirm the chart stays visible while loading and on a metrics error. After a
+   recoverable failure, retry only explicitly. A stale snapshot must instead prompt
+   history reload followed by a new explicit metrics load.
+5. Use Network throttling to inspect loading/disabled controls and change dates,
+   symbol or mode during a pending request; no old metrics should appear. Reload
+   history and confirm previous metrics clear even for the same dates. Cancelling
+   the browser request does not guarantee a provider attempt already sent was avoided.
+6. Check keyboard focus, status announcements, expandable limitations, mobile layout
+   and long-value wrapping. Mocked timeout/quota/malformed/snapshot-mismatch cases do
+   not need live provider failures to be considered tested; report browser coverage
+   separately and do not deliberately exhaust the free quota.
