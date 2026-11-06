@@ -1296,3 +1296,79 @@ This verifies one endpoint/cache flow, not independent provider accuracy,
 corporate-action adjustment, other symbols, or display permissions. No raw provider
 bars or credentials are stored in this record. No additional live requests were
 made while recording these user-reported results.
+
+### Internal planning-only real-history research
+
+`RealResearch(model, service, enabled=False).run(RealResearchInput(question=...))`
+(in `app.real_research`) is a separate **planning-and-execution workflow**, not
+an adaptive agent that inspects real results. It has no HTTP endpoint, startup
+registration, frontend integration, or new environment flag. Internal callers
+must explicitly pass `enabled=True`, an available `GeminiClient`, and the
+existing `HistoricalService` configured as `alpha_vantage`. Demo mode, missing
+configuration and closed clients fail before external calls. The caller retains
+ownership of both clients and closes them using their existing lifecycle.
+
+The order is fixed: validate instruction → one structured Gemini plan → validate
+all plan fields → sequential history retrieval → existing raw calculator →
+deterministic backend statements. Model content contains only the instruction,
+static restrictions and the schema. Provider observations, metadata, metrics,
+errors, accounts, sessions and watchlists are never added to model content.
+There is no model call after retrieval starts, including on failures. Tests
+capture the installed SDK's outbound HTTP body with mocked transport and check
+sentinels on both success and failure. Live Gemini compatibility is unverified.
+
+Questions must be trimmed, 1–1000 characters, and contain instructions only:
+no personal information or pasted provider datasets. Extra fields and obvious
+JSON/CSV datasets are rejected before planning. This small heuristic is **not**
+a confidentiality guarantee for arbitrary user text. Exactly two explicit
+YYYY-MM-DD date mentions in start/end order are required (same-day ranges are
+allowed); missing/ambiguous dates yield clarification. The backend also checks
+that planned dates match those mentions, are ordered and span no more than 90
+calendar days inclusive. Interpreting the remaining natural-language intent is
+model-dependent, not a guarantee that every unsupported phrase is detected.
+
+The strict plan contains `status`, a fixed `reason`, `symbols`, `start_date`,
+`end_date`, and `intents`. `planned/ready` requires one or two unique supported
+symbols and one or two unique intents. Reports allow `raw_price_change`,
+`raw_sma_20`, `raw_sma_50`, and `raw_return_sample_stddev_20`; comparison allows
+only `raw_price_change` for exactly two symbols. Clarification/unsupported plans
+have empty lists and null dates, with fixed reason codes and backend messages.
+Arbitrary model prose, numerical findings, executable fields and extra fields
+are rejected. Rankings, forecasts, advice and other comparisons are deferred.
+
+Limits per invocation: one model request, 1,024 output tokens, at most 20 seconds
+for planning, and at most 30 seconds overall (callers can shorten the overall
+limit). There are no tools, continuations, repair calls or retries. At most two
+history retrievals run sequentially, once per symbol, with no extra warm-up
+observations. The injected service retains its snapshot cache, request coalescing
+and shared quote/history attempt budget; calculation consumes no attempts.
+Timeout/cancellation cleans up workflow tasks. As in the history service, a
+shielded shared provider fetch may finish/cache after its waiter is cancelled;
+the service owner remains responsible for final shutdown.
+
+The compact `RealResearchResult` includes the validated plan when available,
+`status`, safe `code/message`, `model_calls`, `history_retrievals`, per-symbol
+errors, omissions, limitations, `rh1`/`rh2` evidence, and backend findings linked
+to evidence IDs and metric keys. Evidence is existing `RealHistoryMetrics`,
+without raw bars: Decimal strings, actual windows/counts, source timestamps,
+cache flags, ranges and source/calculation limitations are preserved. Evidence
+is revalidated and must match the requested symbol/range. Partial failures keep
+successful evidence; empty/short history has unavailable metrics rather than
+zero findings. Unexpected execution defects return `research_failed`, not a
+misleading input error. Public results contain no raw provider/SDK error text.
+
+Comparisons require available metrics with matching actual windows, counts,
+units, currency, interval, source, data kind and adjustment basis. Fetch times
+may differ. Relations use the serialized Decimal values, so displayed ties
+remain ties. Incompatible inputs produce an omission rather than a comparison.
+Raw descriptions retain `alpha_vantage/end_of_day/unadjusted` provenance:
+corporate actions and calendar completeness remain unchecked, raw change is not
+total return or shareholder performance, raw-return variability is not annualized
+or a reliable investment-risk measure, and nominal SMAs do not rank investments.
+
+This path does not change existing research flows: configured real quote values
+**can still be sent to Gemini by existing quote explanation/agent flows**. Keep
+`RESEARCH_ENABLED=false` when using real quotes pending the separate data-use
+decision. Planning-only access does not establish public-display or external-model
+permissions, nor does it sanitize arbitrary user-supplied text. Public demos
+remain fictional; do not use this internal foundation as permission to deploy.

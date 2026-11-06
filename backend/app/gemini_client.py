@@ -12,6 +12,12 @@ from pydantic import ValidationError
 
 from app.historical_findings import AgentReply
 from app.historical_research import HistoricalResearchInput
+from app.real_research_plan import (
+    PLANNER_INSTRUCTION,
+    RealResearchInput,
+    RealResearchPlan,
+    validate_plan,
+)
 from app.research import QuotesInput, QuotesResult
 from app.research_explanation import Finding, ModelFailure, ModelReply, RenderedFinding
 
@@ -175,6 +181,48 @@ class GeminiClient:
         try:
             return ModelReply.model_validate_json(text)
         except (ValidationError, ValueError):
+            raise ModelFailure('invalid_model_output') from None
+
+    async def plan_real_research(self, request: RealResearchInput, *, timeout: float = 20.0) -> RealResearchPlan:
+        """One instruction-only call. No service/evidence argument or follow-up turn."""
+        request = RealResearchInput.model_validate(request)
+        if timeout <= 0:
+            raise ModelFailure('research_timeout')
+        timeout = min(timeout, 20.0)
+        try:
+            response = await asyncio.wait_for(self.client.aio.models.generate_content(
+                model=self.model, contents=json.dumps({'question': request.question}),
+                config=types.GenerateContentConfig(
+                    system_instruction=PLANNER_INSTRUCTION,
+                    response_mime_type='application/json',
+                    response_json_schema=RealResearchPlan.model_json_schema(),
+                    candidate_count=1, max_output_tokens=1024, tools=[],
+                    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+                    automatic_continuation=False,
+                    http_options=types.HttpOptions(timeout=max(1, int(timeout * 1000)),
+                                                  retry_options=types.HttpRetryOptions(attempts=1)),
+                ),
+            ), timeout)
+        except errors.APIError as error:
+            raise ModelFailure('model_quota' if error.code == 429 else 'model_unavailable') from None
+        except (httpx.TimeoutException, asyncio.TimeoutError):
+            raise ModelFailure('research_timeout') from None
+        except Exception:  # noqa: BLE001 -- no SDK exception text/telemetry leaves this boundary.
+            raise ModelFailure('model_unavailable') from None
+        content = checked_content(response)
+        parts = content.parts or []
+        if content.role != 'model' or not parts or any(
+            any(value is not None for value in part.model_dump(
+                exclude={'text', 'thought', 'thought_signature'}, exclude_none=True,
+            ).values()) for part in parts
+        ):
+            raise ModelFailure('invalid_model_output')
+        text = ''.join(part.text or '' for part in parts if not part.thought)
+        if len(text) > 16_000:
+            raise ModelFailure('invalid_model_output')
+        try:
+            return validate_plan(RealResearchPlan.model_validate_json(text), request)
+        except (ValueError, TypeError):
             raise ModelFailure('invalid_model_output') from None
 
     async def agent_turn(self, conversation: list[types.Content], *, timeout: float,
