@@ -4,6 +4,7 @@ import json
 import logging
 import unittest
 from datetime import date, datetime
+from typing import ClassVar
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -841,3 +842,192 @@ class ProviderHistoryMetricsApiTests(unittest.TestCase):
                     response = client.get(self.path, params=self.dates)
                     self.assertEqual(response.status_code, 500)
                     self.assertNotIn('PRIVATE_SENTINEL', response.text)
+
+
+class RealResearchApiTests(unittest.TestCase):
+    question = 'Compare AAPL and MSFT raw price change from 2026-10-23 to 2026-10-28.'
+    enabled: ClassVar[dict[str, str]] = {'MARKET_DATA_PROVIDER': 'demo', 'RESEARCH_ENABLED': 'false',
+               'REAL_RESEARCH_ENABLED': 'true', 'REAL_HISTORY_ENABLED': 'true',
+               'GEMINI_API_KEY': 'synthetic-model-key', 'ALPHA_VANTAGE_API_KEY': 'synthetic-provider-key'}
+
+    def setUp(self):
+        guard = patch.dict('os.environ', {}, clear=True)
+        guard.start()
+        self.addCleanup(guard.stop)
+        for transport, method in [('AsyncHTTPTransport', 'handle_async_request'), ('HTTPTransport', 'handle_request')]:
+            guard = patch(f'httpx.{transport}.{method}', side_effect=AssertionError('External network forbidden'))
+            mocked = guard.start()
+            self.addCleanup(guard.stop)
+            self.addCleanup(mocked.assert_not_called)
+
+    def assert_no_store(self, response, status):
+        self.assertEqual(response.status_code, status)
+        self.assertEqual(response.headers['cache-control'], 'no-store')
+
+    def test_flags_and_missing_configuration_without_execution(self):
+        configurations = [{}, *[{**self.enabled, 'REAL_RESEARCH_ENABLED': flag}
+                               for flag in ['false', 'TRUE', ' true ', '1']],
+                          *[{**self.enabled, field: value} for field, value in [
+                              ('REAL_HISTORY_ENABLED', 'false'), ('REAL_HISTORY_ENABLED', 'TRUE'),
+                              ('ALPHA_VANTAGE_API_KEY', ''), ('GEMINI_API_KEY', ''), ('GEMINI_MODEL', '')]]]
+        for configuration in configurations:
+            with self.subTest(configuration=list(configuration)), patch.dict('os.environ', configuration, clear=True), TestClient(app) as client:
+                with patch.object(app.state.real_research, 'run', new_callable=AsyncMock) as run:
+                    response = client.post('/api/research/real', json={'question': self.question})
+                    self.assert_no_store(response, 503)
+                    self.assertEqual(response.json()['model_calls'], 0)
+                    run.assert_not_called()
+                self.assertEqual(client.get('/health').status_code, 200)
+                self.assertEqual(client.get('/api/stocks/AAPL/quote').json()['source'], 'demo')
+
+    def test_lifecycle_shares_one_model_and_closes_once(self):
+        for legacy, real in [('false', 'false'), ('true', 'false'), ('false', 'true'), ('true', 'true')]:
+            model = AsyncMock(spec=GeminiClient)
+            with patch.dict('os.environ', {**self.enabled, 'RESEARCH_ENABLED': legacy, 'REAL_RESEARCH_ENABLED': real}), patch(
+                'app.main.GeminiClient', return_value=model,
+            ) as direct, patch('app.gemini_client.GeminiClient', return_value=model) as configured:
+                with TestClient(app):
+                    self.assertIs(app.state.research.model, model if legacy == 'true' else None)
+                    self.assertIs(app.state.research_agent.model, app.state.research.model)
+                    self.assertIs(app.state.real_research.model, model if 'true' in (legacy, real) else None)
+                    self.assertIs(app.state.real_research.service, app.state.historical_data)
+                    self.assertIs(app.state.market_data.budget, app.state.historical_data.budget)
+                    self.assertIs(app.state.market_data.client, app.state.historical_data.client)
+                count = int('true' in (legacy, real))
+                self.assertEqual(direct.call_count + configured.call_count, count)
+                self.assertEqual(model.close.await_count, count)
+
+    def test_validation_is_safe_and_does_not_execute(self):
+        with TestClient(app) as client, patch.object(app.state.real_research, 'run', new_callable=AsyncMock) as run:
+            for body in [{}, {'question': None}, {'question': 1}, {'question': ''}, {'question': ' '},
+                         {'question': 'x' * 1001}, {'question': self.question, 'symbols': ['AAPL']},
+                         {'question': '{"close":12345}'}, {'question': 'date,close\n2026-10-23,12345'}]:
+                response = client.post('/api/research/real', json=body)
+                self.assert_no_store(response, 422)
+                self.assertNotIn('12345', response.text)
+            self.assert_no_store(client.post('/api/research/real', content='{', headers={'Content-Type': 'application/json'}), 422)
+            run.assert_not_called()
+
+    def test_actual_sdk_flow_isolated_from_provider_and_legacy_disabled(self):
+        from test_real_history import payload
+        from test_real_research_plan import response_payload
+
+        events, bodies = [], []
+
+        def model_transport(req):
+            events.append('model')
+            bodies.append(json.loads(req.content))
+            return httpx.Response(200, json=response_payload())
+
+        def provider_transport(req):
+            events.append('provider')
+            fixture = payload(req.url.params['symbol'])
+            fixture['Time Series (Daily)']['2026-10-28']['4. close'] = '103.271829'
+            return httpx.Response(200, json=fixture)
+        model = GeminiClient('synthetic-model-key', http_client=httpx.AsyncClient(transport=httpx.MockTransport(model_transport)))
+        with patch.dict('os.environ', self.enabled), patch('app.main.GeminiClient', return_value=model), TestClient(app) as client, patch.object(
+            app.state.historical_data.client, '_transport', httpx.MockTransport(provider_transport),
+        ):
+            response = client.post('/api/research/real', json={'question': f'  {self.question}  '})
+            self.assert_no_store(response, 200)
+            result = response.json()
+            self.assertEqual(result['status'], 'answered')
+            self.assertEqual((result['model_calls'], result['history_retrievals']), (1, 2))
+            self.assertEqual(result['findings'][0]['relation'], 'equal')
+            self.assertEqual(result['evidence'][0]['metrics']['raw_price_change']['value'], '3.271829')
+            self.assertNotIn('bars', response.text)
+            self.assertEqual(events, ['model', 'provider', 'provider'])
+            self.assertNotIn('103.271829', json.dumps(bodies))
+            self.assertNotIn('3.271829', json.dumps(bodies))
+            self.assertEqual(json.loads(bodies[0]['contents'][0]['parts'][0]['text']), {'question': self.question})
+            self.assertFalse(app.state.research.active.locked())
+            self.assertEqual(client.post('/api/research/agent', json={'question': self.question}).status_code, 503)
+            self.assertEqual(client.post('/api/research', json={'question': self.question, 'symbols': ['AAPL']}).status_code, 503)
+            schema = client.get('/openapi.json').json()['paths']['/api/research/real']['post']
+            self.assertEqual(schema['responses']['200']['content']['application/json']['schema'],
+                             {'$ref': '#/components/schemas/RealResearchResult'})
+            self.assertEqual(client.get('/api/stocks/AAPL/history?start_date=2025-01-01&end_date=2025-01-03').json()['source'], 'demo')
+        self.assertTrue(model.http_client.is_closed)
+
+    def test_outcomes_and_provider_errors_remain_typed(self):
+        from test_real_history import payload
+        from test_real_research_plan import plan_payload
+
+        from app.real_research_plan import RealResearchPlan
+
+        model = AsyncMock(spec=GeminiClient)
+        model.http_client = httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(500)))
+        with patch.dict('os.environ', self.enabled), patch('app.main.GeminiClient', return_value=model), TestClient(app) as client:
+            with patch.object(app.state.historical_data, 'get_history', new_callable=AsyncMock) as retrieve:
+                for status, reason in [('clarification', 'clarify_instruction'), ('unsupported', 'unsupported_request')]:
+                    model.plan_real_research.return_value = RealResearchPlan(**plan_payload(
+                        status=status, reason=reason, symbols=[], intents=[], start_date=None, end_date=None))
+                    response = client.post('/api/research/real', json={'question': self.question})
+                    self.assert_no_store(response, 200)
+                    self.assertEqual(response.json()['status'], status)
+                retrieve.assert_not_called()
+            model.plan_real_research.return_value = RealResearchPlan(**plan_payload(
+                intents=[{'kind': 'report', 'metric': 'raw_price_change'}]))
+            def provider(req):
+                return httpx.Response(200, json=payload()) if req.url.params['symbol'] == 'AAPL' else httpx.Response(500, text='PRIVATE')
+            with patch.object(app.state.historical_data.client, '_transport', httpx.MockTransport(provider)):
+                response = client.post('/api/research/real', json={'question': self.question})
+                self.assert_no_store(response, 200)
+                self.assertEqual(response.json()['status'], 'partial')
+                self.assertEqual(len(response.json()['evidence']), 1)
+                self.assertNotIn('PRIVATE', response.text)
+            model.plan_real_research.side_effect = ModelFailure('model_quota')
+            response = client.post('/api/research/real', json={'question': self.question})
+            self.assert_no_store(response, 200)
+            self.assertEqual(response.json()['code'], 'model_quota')
+            self.assertFalse(app.state.research.active.locked())
+            client.portal.call(model.http_client.aclose)
+
+    def test_shared_admission_cancellation_timeout_and_server_errors(self):
+        from app.real_research import RealResearchResult
+
+        model = AsyncMock(spec=GeminiClient)
+        model.http_client = httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(500)))
+        with patch.dict('os.environ', {**self.enabled, 'RESEARCH_ENABLED': 'true'}), patch(
+            'app.main.configured_client', return_value=model,
+        ), TestClient(app) as client:
+            async def exercise():
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as http:
+                    bodies = {'/api/research/real': {'question': self.question},
+                              '/api/research/agent': {'question': self.question},
+                              '/api/research': {'question': 'Compare their reported percentage changes.',
+                                                'symbols': ['AAPL', 'MSFT']}}
+                    for path, method in [('/api/research/real', 'plan_real_research'),
+                                         ('/api/research/agent', 'agent_turn'), ('/api/research', 'generate')]:
+                        started = asyncio.Event()
+                        async def pending(*args, started=started, **kwargs):
+                            started.set()
+                            await asyncio.Event().wait()
+                        getattr(model, method).side_effect = pending
+                        task = asyncio.create_task(http.post(path, json=bodies[path]))
+                        try:
+                            await asyncio.wait_for(started.wait(), 2)
+                            for rejected, rejected_body in bodies.items():
+                                response = await http.post(rejected, json=rejected_body)
+                                self.assertEqual(response.status_code, 429)
+                                if rejected == '/api/research/real':
+                                    self.assert_no_store(response, 429)
+                        finally:
+                            task.cancel()
+                            with self.assertRaises(asyncio.CancelledError):
+                                await task
+                        self.assertFalse(app.state.research.active.locked())
+                    app.state.real_research.deadline = 0.01
+                    response = await http.post('/api/research/real', json=bodies['/api/research/real'])
+                    self.assert_no_store(response, 200)
+                    self.assertEqual(response.json()['code'], 'research_timeout')
+                    self.assertFalse(app.state.research.active.locked())
+                    for mock in [AsyncMock(side_effect=RuntimeError('PRIVATE')),
+                                 AsyncMock(return_value=RealResearchResult(code='research_failed', message='safe'))]:
+                        with patch.object(app.state.real_research, 'run', mock):
+                            response = await http.post('/api/research/real', json=bodies['/api/research/real'])
+                            self.assert_no_store(response, 500)
+                            self.assertNotIn('PRIVATE', response.text)
+                            self.assertFalse(app.state.research.active.locked())
+            client.portal.call(exercise)
+            client.portal.call(model.http_client.aclose)

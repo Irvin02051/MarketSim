@@ -6,12 +6,14 @@ from typing import Annotated
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from app.auth import Identity, IdentityVerifier, require_identity
-from app.gemini_client import configured_client
+from app.gemini_client import DEFAULT_MODEL, GeminiClient, configured_client
 from app.historical_data import HistoricalInput, HistoricalResult, get_history
 from app.market_data import MarketData, ProviderBudget, Quote, QuoteError
 from app.real_history import (
@@ -21,6 +23,8 @@ from app.real_history import (
     RealHistoryResult,
 )
 from app.real_history_metrics import RealHistoryMetrics, calculate_real_history_metrics
+from app.real_research import MESSAGES, RealResearch, RealResearchResult
+from app.real_research_plan import RealResearchInput
 from app.research_agent import AgentInput, AgentResult, ResearchAgent
 from app.research_explanation import ResearchExplanation, ResearchInput, ResearchResult
 from app.research_explanation import explanation as research_outcome
@@ -51,9 +55,21 @@ async def lifespan(app: FastAPI):
         history = HistoricalService(client, budget=budget,
                                     mode='alpha_vantage' if app.state.real_history_enabled else 'demo')
         app.state.historical_data = history
-        model = configured_client()
-        app.state.research = ResearchExplanation(model)
-        app.state.research_agent = ResearchAgent(model)
+        legacy_model = configured_client()
+        model = legacy_model
+        real_enabled = os.environ.get('REAL_RESEARCH_ENABLED', 'false') == 'true'
+        if model is None and real_enabled:
+            key = os.environ.get('GEMINI_API_KEY', '').strip()
+            model_name = os.environ.get('GEMINI_MODEL', DEFAULT_MODEL).strip()
+            if key and model_name:
+                try:
+                    model = GeminiClient(key, model_name)
+                except (ValueError, TypeError, RuntimeError, OSError):
+                    # Missing/invalid optional configuration must not break demo startup.
+                    model = None
+        app.state.research = ResearchExplanation(legacy_model)
+        app.state.research_agent = ResearchAgent(legacy_model)
+        app.state.real_research = RealResearch(model, history, enabled=real_enabled)
         try:
             yield
         finally:
@@ -215,5 +231,52 @@ async def research_agent(body: AgentInput, request: Request):
         return JSONResponse(status_code=429, content=result.model_dump(mode='json'))
     try:
         return await agent.run(request.app.state.market_data, body)
+    finally:
+        active.release()
+
+
+@app.exception_handler(RequestValidationError)
+async def safe_real_research_validation(request: Request, error: RequestValidationError):
+    if request.url.path == '/api/research/real':
+        # Do not echo pasted datasets or other rejected body fields.
+        return JSONResponse(status_code=422, content={'detail': MESSAGES['invalid_instruction']},
+                            headers={'Cache-Control': 'no-store'})
+    return await request_validation_exception_handler(request, error)
+
+
+@app.post('/api/research/real', response_model=RealResearchResult, responses={
+    429: {'model': RealResearchResult, 'description': 'Shared research slot occupied'},
+    503: {'model': RealResearchResult, 'description': 'Disabled or configuration unavailable'},
+    500: {'description': 'Unexpected execution failure'},
+})
+async def real_research(body: RealResearchInput, request: Request):
+    workflow = request.app.state.real_research
+    headers = {'Cache-Control': 'no-store'}
+
+    def unavailable(code, status):
+        result = RealResearchResult(code=code, message=MESSAGES[code])
+        return JSONResponse(status_code=status, content=result.model_dump(mode='json'), headers=headers)
+
+    if not workflow.enabled:
+        return unavailable('disabled', 503)
+    history, model = workflow.service, workflow.model
+    if (not request.app.state.real_history_enabled or history is None or model is None
+            or history.mode != 'alpha_vantage' or history.closed or not history.api_key.strip()
+            or history.client.is_closed or model.http_client.is_closed):
+        return unavailable('unconfigured', 503)
+    active = request.app.state.research.active
+    if not active.acquire(blocking=False):
+        result = RealResearchResult(code='research_busy', message='Another research request is active; try again later.')
+        return JSONResponse(status_code=429, content=result.model_dump(mode='json'), headers=headers)
+    try:
+        result = await workflow.run(body)
+        if result.code == 'research_failed':
+            raise HTTPException(status_code=500, detail='Real research execution failed.', headers=headers)
+        status = 503 if result.code in {'disabled', 'unconfigured'} else 200
+        return JSONResponse(status_code=status, content=result.model_dump(mode='json'), headers=headers)
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001 -- keep unexpected implementation details out of HTTP responses.
+        raise HTTPException(status_code=500, detail='Real research execution failed.', headers=headers) from None
     finally:
         active.release()

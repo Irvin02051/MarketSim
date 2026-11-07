@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import os
 import re
 import time
@@ -20,7 +21,33 @@ from app.historical_data import (
     HistoryModel,
     get_history,
 )
-from app.market_data import TTL, ProviderBudget, QuoteError
+from app.market_data import (
+    NOTICE_RULE_IDS,
+    SYMBOLS,
+    TTL,
+    ProviderBudget,
+    QuoteError,
+    notice_quota_rule,
+)
+
+logger = logging.getLogger(__name__)
+FAILURE_CATEGORIES = frozenset({
+    'local_budget_exhausted', 'upstream_http_429',
+    'upstream_notice_quota_match', 'upstream_notice_other',
+})
+
+
+def _log_failure(category, symbol, *, upstream_status=None, local_attempt_count=None, rule=None):
+    """Fixed diagnostic metadata only, including when the parser is called directly."""
+    if category not in FAILURE_CATEGORIES:
+        return
+    safe_symbol = symbol if isinstance(symbol, str) and symbol in SYMBOLS else None
+    status = upstream_status if type(upstream_status) is int and 100 <= upstream_status <= 599 else None
+    count = local_attempt_count if type(local_attempt_count) is int and 0 <= local_attempt_count <= 20 else None
+    safe_rule = rule if rule in NOTICE_RULE_IDS else None
+    logger.warning('Real history failure category=%s symbol=%s upstream_status=%s local_attempt_count=%s rule=%s',
+                   category, safe_symbol, status, count, safe_rule)
+
 
 FETCH_DEADLINE = 10.0
 MAX_BODY_BYTES = 256 * 1024
@@ -119,7 +146,8 @@ def unique_object(pairs):
     return result
 
 
-def parse_snapshot(body: bytes, symbol: str, fetched_at: datetime) -> Snapshot:
+def parse_snapshot(body: bytes, symbol: str, fetched_at: datetime, *,
+                   upstream_status: int | None = None, local_attempt_count: int | None = None) -> Snapshot:
     """Decode duplicate-aware JSON and validate every bar before caching anything."""
     try:
         payload = json.loads(body, object_pairs_hook=unique_object)
@@ -127,9 +155,10 @@ def parse_snapshot(body: bytes, symbol: str, fetched_at: datetime) -> Snapshot:
             raise TypeError('Expected object')
         for key in ('Note', 'Information', 'Error Message'):
             if key in payload:
-                message = str(payload[key]).lower()
-                if any(term in message for term in ('rate limit', 'call frequency', 'calls per',
-                                                    'requests per', 'api quota', 'quota exceeded')):
+                rule = notice_quota_rule(payload[key])
+                _log_failure('upstream_notice_quota_match' if rule else 'upstream_notice_other', symbol,
+                             upstream_status=upstream_status, local_attempt_count=local_attempt_count, rule=rule)
+                if rule:
                     raise HistoryError(429, 'Provider request quota reached.')
                 raise HistoryError(502, 'Provider could not supply daily history.')
         metadata = payload['Meta Data']
@@ -232,6 +261,7 @@ class HistoricalService:
         try:
             self.budget.reserve()
         except QuoteError:
+            _log_failure('local_budget_exhausted', symbol, local_attempt_count=len(self.budget.attempts))
             raise HistoryError(429, 'Local daily provider attempt budget exhausted.') from None
         try:
             body = await asyncio.wait_for(self._read(symbol), timeout=self.deadline)
@@ -239,7 +269,8 @@ class HistoricalService:
             raise HistoryError(504, 'History provider request timed out.') from None
         except httpx.RequestError:
             raise HistoryError(502, 'History provider connection failed.') from None
-        snapshot = parse_snapshot(body, symbol, self.utcnow())
+        snapshot = parse_snapshot(body, symbol, self.utcnow(), upstream_status=200,
+                                  local_attempt_count=len(self.budget.attempts))
         self.cache[symbol] = (self.clock() + TTL, snapshot)
         return snapshot
 
@@ -249,6 +280,8 @@ class HistoricalService:
             'datatype': 'json', 'apikey': self.api_key,
         }, follow_redirects=False) as response:
             if response.status_code == 429:
+                _log_failure('upstream_http_429', symbol, upstream_status=429,
+                             local_attempt_count=len(self.budget.attempts))
                 raise HistoryError(429, 'Provider request quota reached.')
             if response.status_code != 200:
                 raise HistoryError(502, 'History provider HTTP request failed.')

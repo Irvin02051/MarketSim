@@ -201,7 +201,7 @@ class MarketDataTests(unittest.IsolatedAsyncioTestCase):
             (httpx.Response(302, headers={'Location': 'https://example.com'}), 502),
             (httpx.Response(200, text='invalid ' + KEY), 502),
             (httpx.Response(200, json={'Global Quote': {}}), 502),
-            (httpx.Response(200, json={'Note': 'API call frequency: 25 requests per day ' + KEY}), 429),
+            (httpx.Response(200, json={'Note': 'API call frequency: 25 requests per day ' + KEY}), 502),
             (httpx.Response(200, json={'Information': 'Rate limit reached ' + KEY}), 429),
             (httpx.Response(200, json={'Information': 'Premium endpoint ' + KEY}), 502),
             (httpx.Response(200, json={'Error Message': KEY}), 502),
