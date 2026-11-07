@@ -188,6 +188,26 @@ class RealResearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.findings)
         self.assertIsNone(result.evidence[0].metrics.raw_sma_50.value)
 
+    async def test_ambiguous_msft_notice_retains_aapl_without_comparison(self):
+        # Synthetic mixed restriction notice, not the observed live response.
+        self.provider_handler = lambda req: (
+            httpx.Response(200, json=payload()) if req.url.params['symbol'] == 'AAPL'
+            else httpx.Response(200, json={'Information':
+                'Premium access required; rate limit is 25 requests per day. PRIVATE_SECRET'})
+        )
+        with self.assertLogs('app.real_history', level='WARNING') as logs:
+            result = await self.run_question()
+        self.assertEqual(len(result.evidence), 1)
+        self.assertEqual(result.evidence[0].metrics.symbol, 'AAPL')
+        self.assertEqual(result.errors[0].status, 502)
+        self.assertFalse(result.findings)
+        self.assertTrue(result.omitted)
+        self.assertEqual(self.provider_requests, ['AAPL', 'MSFT'])
+        self.assertEqual(len(self.model_requests), 1)
+        self.assertNotIn('PRIVATE_SECRET', result.model_dump_json())
+        self.assertNotIn('PRIVATE_SECRET', str(logs.records[0].__dict__))
+        self.assertIn('category=upstream_notice_other', logs.output[0])
+
     async def test_safe_expected_errors_and_unexpected_calculation_failure(self):
         for status in [422, 429, 502, 503, 504]:
             with patch.object(self.service, 'get_history', AsyncMock(side_effect=HistoryError(status, 'SECRET'))):

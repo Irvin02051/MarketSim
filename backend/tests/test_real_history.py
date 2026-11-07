@@ -13,12 +13,20 @@ from app.historical_data import HistoricalResult
 from app.historical_metrics import calculate_historical_metrics
 from app.historical_research import get_historical_metrics
 from app.main import app
-from app.market_data import TTL, WINDOW, MarketData, ProviderBudget, QuoteError
+from app.market_data import (
+    TTL,
+    WINDOW,
+    MarketData,
+    ProviderBudget,
+    QuoteError,
+    parse_quote,
+)
 from app.real_history import (
     MAX_BODY_BYTES,
     HistoricalService,
     HistoryError,
     HistoryRequest,
+    _log_failure,
     parse_snapshot,
 )
 
@@ -60,6 +68,86 @@ class HistoryTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.service.close()
         await self.client.aclose()
+
+    async def test_diagnostics_distinguish_local_and_upstream_429(self):
+        self.budget.attempts.extend([self.now] * 20)
+        with self.assertLogs('app.real_history', level='WARNING') as logs, self.assertRaises(HistoryError) as caught:
+            await self.service.get_history(request('MSFT'))
+        self.assertEqual(caught.exception.detail, 'Local daily provider attempt budget exhausted.')
+        self.assertEqual(logs.records[0].getMessage(),
+                         'Real history failure category=local_budget_exhausted symbol=MSFT '
+                         'upstream_status=None local_attempt_count=20 rule=None')
+        self.assertEqual(self.requests, [])
+        # Synthetic clock expiry, not a change to the production budget.
+        self.now = WINDOW
+        self.handler = lambda req: httpx.Response(429, text=KEY, headers={'x-private': KEY})
+        with self.assertLogs('app.real_history', level='WARNING') as logs, self.assertRaises(HistoryError) as caught:
+            await self.service.get_history(request('MSFT'))
+        self.assertEqual(caught.exception.detail, 'Provider request quota reached.')
+        self.assertEqual(logs.records[0].getMessage(),
+                         'Real history failure category=upstream_http_429 symbol=MSFT '
+                         'upstream_status=429 local_attempt_count=1 rule=None')
+        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(len(logs.records), 1)
+        self.assertNotIn(KEY, str(logs.records[0].__dict__))
+
+    async def test_notice_diagnostics_classify_conservatively_and_redact(self):
+        # Synthetic notices; none claims to reproduce the live MSFT response.
+        cases = [
+            ('Note', 'Rate limit reached', 'explicit_quota_exhaustion', 429),
+            ('Note', 'API quota has been exhausted', 'explicit_quota_exhaustion', 429),
+            ('Note', 'You have exceeded your rate limit', 'explicit_quota_exhaustion', 429),
+            ('Information', 'Requests are being throttled', 'explicit_throttling', 429),
+            ('Note', 'Too many requests', 'explicit_throttling', 429),
+            ('Information', 'Premium required; free allowance is 25 requests per day', None, 502),
+            ('Information', 'Access denied; rate limit information: 25 requests per day', None, 502),
+            ('Information', 'Premium required. Rate limit reached.', None, 502),
+            ('Information', '25 requests per day are allowed; no exhaustion reported', None, 502),
+            ('Note', 'If your quota is exhausted, wait', None, 502),
+            ('Note', 'Your quota is not exhausted', None, 502),
+            ('Note', 'Rate limit and call frequency information', None, 502),
+            ('Information', 'Unknown restriction', None, 502),
+            ('Information', 'Premium endpoint required', None, 502),
+        ]
+        for attempt, (key, notice, rule, status) in enumerate(cases, 1):
+            with self.subTest(rule=rule, attempt=attempt):
+                body = {key: notice + ' PRIVATE_NOTICE ' + KEY + ' https://example.invalid/SECRET_URL',
+                        'private': 'PRIVATE_FINANCIAL_876543.21'}
+                self.handler = lambda req, body=body: httpx.Response(200, json=body)
+                with self.assertLogs('app.real_history', level='WARNING') as logs, self.assertRaises(HistoryError) as caught:
+                    await self.service.get_history(request('MSFT'))
+                # The same notice must produce the same quote and history status.
+                with self.assertRaises(QuoteError) as quote_error:
+                    parse_quote(body, 'MSFT', NOW)
+                self.assertEqual(quote_error.exception.status, status)
+                self.assertNotIn(KEY, str(quote_error.exception))
+                category = 'upstream_notice_quota_match' if rule else 'upstream_notice_other'
+                self.assertEqual(caught.exception.status, status)
+                self.assertEqual(logs.records[0].getMessage(),
+                                 f'Real history failure category={category} symbol=MSFT '
+                                 f'upstream_status=200 local_attempt_count={attempt} rule={rule}')
+                self.assertEqual(len(logs.records), 1)
+                for sentinel in [KEY, 'PRIVATE_NOTICE', 'PRIVATE_FINANCIAL_876543.21', notice,
+                                 'https://', 'apikey']:
+                    self.assertNotIn(sentinel, str(logs.records[0].__dict__))
+                self.assertIsNone(logs.records[0].exc_info)
+                self.assertEqual(len(self.requests), attempt)
+                self.assertEqual(len(self.budget.attempts), attempt)
+                self.assertEqual(self.service.cache, {})
+
+    def test_direct_parser_diagnostics_only_allow_supported_metadata(self):
+        with self.assertLogs('app.real_history', level='WARNING') as logs, self.assertRaises(HistoryError):
+            parse_snapshot(json.dumps({'Information': 'PRIVATE_NOTICE'}).encode(),
+                           'PRIVATE_SYMBOL', NOW, upstream_status='PRIVATE_STATUS',
+                           local_attempt_count='PRIVATE_COUNT')
+        self.assertEqual(logs.records[0].getMessage(),
+                         'Real history failure category=upstream_notice_other symbol=None '
+                         'upstream_status=None local_attempt_count=None rule=None')
+        with self.assertLogs('app.real_history', level='WARNING') as logs:
+            _log_failure('upstream_notice_other', 'MSFT', rule='PRIVATE_RULE')
+        self.assertNotIn('PRIVATE_RULE', str(logs.records[0].__dict__))
+        with self.assertNoLogs('app.real_history', level='WARNING'):
+            _log_failure('PRIVATE_CATEGORY', 'MSFT')
 
     async def test_validation_before_fetch(self):
         for item in [request('TSLA'), request(' AAPL'), request(True), request(interval='weekly'),
@@ -255,7 +343,7 @@ class HistoryTests(unittest.IsolatedAsyncioTestCase):
                  [(429, 429), (403, 502), (500, 502), (302, 502)]]
         cases += [(httpx.Response(200, content=b'not-json ' + KEY.encode()), 502),
                   (httpx.Response(200, json={'Information': 'Premium ' + KEY}), 502),
-                  (httpx.Response(200, json={'Note': '25 requests per day ' + KEY}), 429)]
+                  (httpx.Response(200, json={'Note': '25 requests per day ' + KEY}), 502)]
         for response, status in cases:
             self.handler = lambda req, response=response: response
             with self.assertRaises(HistoryError) as caught:

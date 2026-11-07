@@ -85,17 +85,40 @@ def normalize_symbol(symbol: str) -> str:
     return symbol
 
 
+NOTICE_RULE_IDS = frozenset({'explicit_quota_exhaustion', 'explicit_throttling'})
+
+
+def notice_quota_rule(value: object) -> str | None:
+    """Conservative HTTP-200 notice heuristic, not a provider error-code contract.
+
+    Restrictions, negation and hypothetical language take precedence. Unknown
+    text stays a provider error; neither allowances nor generic limit terms
+    establish that this request was throttled. Never return provider text.
+    """
+    if not isinstance(value, str):
+        return None
+    message = ' '.join(value.lower().split())
+    if re.search(r"\b(?:premium|subscription|entitlement|upgrade|restricted|unauthorized|forbidden)\b"
+                 r"|access (?:denied|restricted)|(?:invalid|missing) api key", message):
+        return None
+    if re.search(r"\b(?:not|no|never|if|when|may|might|could|would)\s+", message):
+        return None
+    subject = r'(?:api quota|quota|rate limit|request limit|call limit|call frequency)'
+    if re.search(r'\b' + subject + r'\s+(?:(?:has been|is|was|has)\s+)?(?:exceeded|exhausted|reached)\b', message) or re.search(
+        r'\b(?:exceeded|exhausted|reached)\s+(?:(?:your|the)\s+)?' + subject + r'\b', message,
+    ):
+        return 'explicit_quota_exhaustion'
+    if re.search(r'\btoo many requests\b|\brequests? (?:is|are) (?:being )?throttled\b', message):
+        return 'explicit_throttling'
+    return None
+
+
 def parse_quote(payload: object, symbol: str, fetched_at: datetime) -> Quote:
     if not isinstance(payload, dict):
         raise QuoteError(502, 'Provider returned invalid quote data.')
     for key in ('Note', 'Information', 'Error Message'):
         if key in payload:
-            message = str(payload[key]).lower()
-            quota = any(term in message for term in (
-                'rate limit', 'call frequency', 'calls per', 'requests per',
-                'api quota', 'quota exceeded',
-            ))
-            if quota:
+            if notice_quota_rule(payload[key]):
                 raise QuoteError(429, 'Provider request quota reached.')
             raise QuoteError(502, 'Provider could not supply a quote.')
     raw = payload.get('Global Quote')

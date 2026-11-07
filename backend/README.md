@@ -1315,7 +1315,8 @@ static restrictions and the schema. Provider observations, metadata, metrics,
 errors, accounts, sessions and watchlists are never added to model content.
 There is no model call after retrieval starts, including on failures. Tests
 capture the installed SDK's outbound HTTP body with mocked transport and check
-sentinels on both success and failure. Live Gemini compatibility is unverified.
+sentinels on both success and failure. User-reported live planning and retrieval
+status is recorded below; mocked tests alone do not verify live compatibility.
 
 Questions must be trimmed, 1–1000 characters, and contain instructions only:
 no personal information or pasted provider datasets. Extra fields and obvious
@@ -1372,3 +1373,152 @@ This path does not change existing research flows: configured real quote values
 decision. Planning-only access does not establish public-display or external-model
 permissions, nor does it sanitize arbitrary user-supplied text. Public demos
 remain fictional; do not use this internal foundation as permission to deploy.
+
+### Opt-in real-research HTTP endpoint
+
+`POST /api/research/real` accepts only `{"question": "..."}` using the internal
+`RealResearchInput` contract above. Questions are trimmed, nonempty, at most
+1,000 characters, and instruction-only; extra fields and obvious pasted JSON/CSV
+are rejected. The explicit response model is `RealResearchResult`: validated
+plan, compact evidence (`rh1`, `rh2`), Decimal-string metrics, backend findings,
+limitations, safe per-symbol errors, omissions and execution counts. Raw bars
+are not returned. Gemini makes at most one planning call before retrieval and
+never receives the retrieved observations, derived values or provider errors.
+
+Enablement is independent: only literal `REAL_RESEARCH_ENABLED=true` enables
+this route, and literal `REAL_HISTORY_ENABLED=true` is also required, together
+with nonempty valid Gemini configuration and the backend Alpha Vantage key.
+`RESEARCH_ENABLED=false` keeps `/api/research` and `/api/research/agent` disabled
+even while the new route is enabled. Missing optional configuration does not
+prevent health or fictional demo startup. There is one lifespan-managed Gemini
+client shared when both workflows need it, and the existing real-history service,
+HTTPX client, snapshot cache and shared quote/history budget are reused.
+
+HTTP behavior (all expected responses have `Cache-Control: no-store`):
+
+- **422:** invalid body; safe message without echoing rejected input.
+- **503:** disabled, required history flag missing, or unavailable configuration.
+- **429:** the shared process-local research slot is already occupied.
+- **200:** completed workflow attempt. Inspect `status` and `code`, not HTTP status
+  alone: clarification, unsupported, partial, unavailable and deadline timeout
+  are valid outcomes. Provider failures remain safe per-symbol errors within
+  this result; they do not trigger fictional substitution or another model call.
+- **500:** unexpected execution defects, including the executor's
+  `research_failed` outcome; a safe error is returned rather than claiming a
+  successful attempt. The shared slot is released on failures and cancellation.
+
+All three research routes share one non-queuing admission slot per process.
+Existing limits remain one model call (maximum 20 seconds/1,024 output tokens),
+two sequential history retrievals and 30 seconds overall; no retries, extra
+warm-up data or background workflow is added. Snapshot reuse retains original
+fetch timestamps. Run one backend worker: concurrency and provider attempt
+budgets are process-local, not shared across processes or restarts. Shared history
+fetches retain their existing shielded cancellation semantics.
+
+This flag is not authentication or public-display permission. Bind to localhost,
+keep public deployments disabled, and do not interpret the planning-only data
+boundary as resolving provider/model data-use rights. Corporate actions remain
+unchecked; raw price change is not total return, nominal SMA values do not rank
+investment performance, and raw-return variability is not annualized or a
+reliable investment-risk measure. Existing frontend and Gemini research flows
+are unchanged. Mocked tests alone do not establish live Gemini compatibility;
+see the user-reported verification status below.
+
+Later manual check (not performed during implementation): ensure your private
+backend environment has your keys for `ALPHA_VANTAGE_API_KEY` and `GEMINI_API_KEY`
+and the configured `GEMINI_MODEL`. Never place key values in shell commands or
+share them. Stop any old backend first. From the repository root:
+
+```sh
+cd /Users/irvin/Documents/MarketSim/backend
+MARKET_DATA_PROVIDER=demo RESEARCH_ENABLED=false REAL_HISTORY_ENABLED=true REAL_RESEARCH_ENABLED=true \
+  .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --env-file .env
+```
+
+`.env` is loaded only when you later execute that startup command; no actual
+environment file was read during implementation or validation. In a second
+terminal, send one explicit request:
+
+```sh
+curl -i --max-time 40 http://127.0.0.1:8000/api/research/real \
+  -H 'Content-Type: application/json' \
+  --data '{"question":"Compare Apple and Microsoft raw closing-price change from 2026-10-01 to 2026-10-30."}'
+```
+
+Check `Cache-Control`, status/code, plan, execution counts, provenance, actual
+windows and limitations. The compact provider snapshot moves over time; this
+explicit window may become unavailable. An unavailable/partial result is not a
+reason to automatically retry or change dates silently. This manual command can
+consume one Gemini request and up to two shared provider attempts; it is not an
+automatic validation step. Do not enable legacy research with real quotes pending
+the separate evidence-to-model permission decision.
+
+### Safe real-history failure diagnostics
+
+The `app.real_history` warning logger emits only fixed diagnostic categories and
+allowlisted metadata. It does not log provider notice text, response bodies,
+headers, URLs, keys, exception messages, questions or financial observations.
+Diagnostics do not change public message text, caches, provider budgets or retries.
+HTTP-200 notice classification now uses the conservative shared quote/history
+rule described below.
+
+- `local_budget_exhausted`: the shared process-local budget rejected the attempt
+  before upstream access. `upstream_status=None`; the local count is normally 20.
+- `upstream_http_429`: the upstream HTTP status itself was 429.
+- `upstream_notice_quota_match`: a provider notice matched explicit rejection
+  wording. In service requests the upstream status is 200. `rule` is
+  `explicit_quota_exhaustion` or `explicit_throttling`.
+- `upstream_notice_other`: a provider notice did not match those quota rules;
+  the existing 502 response remains unchanged and `rule=None`.
+
+`symbol` is restricted to AAPL/MSFT/NVDA; unsupported values are omitted as
+`None`. `upstream_status` and `local_attempt_count` are included when known.
+Direct parser calls lack HTTP/budget context unless explicitly supplied. Counts
+are a snapshot of the existing shared process budget at the diagnostic point,
+not an upstream quota balance or a per-symbol counter. Concurrent work can also
+contribute to that count. A failure emits one category at its known source.
+
+HTTP-200 notices produce 429 only for explicit quota/limit exhaustion or reaching
+wording, or explicit throttling (such as “too many requests”). Generic “rate
+limit”, “requests per” and “call frequency” text alone is insufficient. Recognized
+premium/access restrictions take precedence, including mixed restriction/limit
+notices. Negated and hypothetical language, non-string notices and unknown text
+remain safe 502 provider errors. This deliberately favors uncertainty over
+claiming quota exhaustion and may leave unfamiliar genuine throttling text as 502.
+Local budget exhaustion and upstream HTTP 429 are unchanged. No retries, fallback,
+new provider attempts or limit increases are introduced.
+
+Official [support](https://www.alphavantage.co/support/) and
+[API documentation](https://www.alphavantage.co/documentation/) were checked on
+November 7, 2026. They describe request allowances and premium access; the consulted
+pages do not establish a formal machine-readable contract for these notice texts.
+These rules are conservative application heuristics, not exact provider error
+codes. New notice examples in tests are synthetic, not captured live responses.
+
+The cause of the observed live MSFT notice remains unverified. The earlier
+`rule=rate_limit`, HTTP 200, count 2 diagnostic proves only a match under the old
+broad classifier, not daily exhaustion or the actual notice wording. New logs
+still cannot establish full account entitlement or a particular quota window.
+The research wrapper preserves successful evidence and withholds comparisons
+when another symbol is unavailable. It continues to use safe status-based error
+messages; raw notice text never reaches results, logs or Gemini.
+
+Use only the safe categories for later diagnostics. Do not enable wire logging,
+print provider bodies, automatically retry, or bypass provider restrictions.
+
+
+### Real-research verification status — November 7, 2026
+
+User-reported manual attempts on November 6 and 7 successfully completed live
+Gemini planning for AAPL/MSFT and retrieved AAPL history with `cache_hit=false`.
+MSFT returned an upstream HTTP-200 notice. The safe diagnostic recorded a match
+under the earlier broad `rate_limit` rule with a local attempt count of 2; it did
+not reveal the notice text or establish daily quota exhaustion.
+
+The precise MSFT notice cause remains unverified. A successful live two-stock
+comparison remains pending. The latest conservative classification changes were
+tested offline only (234 mocked backend tests, Ruff and whitespace checks passed);
+they have not been validated by another live request. No independent price
+accuracy, public-display permission or corporate-action adjustment is established
+by these checks. No raw provider bars, notice bodies or credentials are stored
+in this verification record.
