@@ -1,0 +1,20 @@
+.real-research-page { max-width: 1100px; margin: 0 auto; padding: clamp(1rem, 4vw, 2.5rem); color: #172b4d; background: #fff; min-height: 100vh; overflow-wrap: anywhere; }
+.real-research-page * { box-sizing: border-box; min-width: 0; }
+.real-research-page p, .real-research-page li { line-height: 1.6; }
+.real-research-page a { color: #154f9c; text-decoration: underline; }
+.real-research-page h1 { font-size: clamp(1.7rem, 5vw, 2.4rem); }
+.real-research-page h4 { font-size: 1.2rem; }
+.real-research-page h5 { font-size: 1rem; margin-bottom: .5rem; }
+.real-research-page form, .real-evidence { border: 1px solid #b5c4d8; border-radius: .6rem; padding: 1rem; margin-block: 1.5rem; }
+.real-research-page label { display: block; font-weight: 700; }
+.real-research-page textarea { display: block; width: 100%; padding: .7rem; font: inherit; border: 1px solid #6c7d96; border-radius: .3rem; resize: vertical; }
+.real-research-page button { padding: .7rem 1rem; font: inherit; cursor: pointer; color: #fff; background: #164b88; border: 1px solid #164b88; border-radius: .3rem; white-space: normal; }
+.real-research-page button:disabled { opacity: .65; cursor: wait; }
+.real-examples { display: flex; flex-wrap: wrap; gap: .6rem; margin-block: 1rem; }
+.real-research-page :focus-visible, .real-evidence:focus { outline: 3px solid #b65500; outline-offset: 3px; }
+.real-evidence-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr)); gap: 1rem; }
+.real-evidence dd { margin: .3rem 0 1rem; }
+.real-evidence dt { font-weight: 700; }
+.real-metric-value { font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
+.real-research-page summary { cursor: pointer; padding-block: .6rem; font-weight: 600; }
+.real-research-page ul { padding-left: 1.3rem; }

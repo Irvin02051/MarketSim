@@ -871,3 +871,112 @@ Later manual browser checks (not performed during implementation):
    and long-value wrapping. Mocked timeout/quota/malformed/snapshot-mismatch cases do
    not need live provider failures to be considered tested; report browser coverage
    separately and do not deliberately exhaust the free quota.
+
+## Private-local real research
+
+`/research/real` is separate from existing `/research` and its watchlist actions.
+Only literal `VITE_REAL_RESEARCH_ENABLED=true` enables submission and the navigation
+link on `/research`; the example defaults to `false`. A direct visit while disabled
+shows navigation and a disabled message with no request. This flag is not
+authentication, authorization or public-display/deployment permission.
+
+Gemini plans an instruction before data retrieval. The backend then retrieves
+real history, calculates raw metrics and renders findings; Gemini does not inspect
+those provider results. Use explicit ISO dates, one or two supported stocks and
+allowlisted raw metric intents. Instructions are trimmed, limited to 1,000 Unicode
+characters and screened for obvious JSON/CSV datasets. Do not include personal
+information or provider datasets; the heuristic is not a confidentiality guarantee.
+
+Only explicit submission posts `{ "question": "..." }` to the existing configured
+`VITE_API_BASE_URL` plus `/api/research/real`. Examples only fill the editable draft.
+The submitted question remains separate from that draft. There are no mount,
+typing, example-selection or navigation requests, polling or automatic retries.
+A synchronous gate prevents duplicate submissions. Browser waiting is bounded to
+35 seconds, including response reading, slightly longer than the backend's
+30-second deadline. Unmount cancels waiting and ignores late results; it cannot
+guarantee an already-submitted upstream operation stopped. Requests omit cookies,
+send no auth tokens, use `no-store`, and reject redirects.
+
+Runtime validation checks the plan, supported symbols, dates, intent restrictions,
+execution counters, evidence IDs, provenance, metric availability/windows/counts,
+error statuses and finding references. The existing pure `parseHistoryMetrics`
+validator is reused without weakening chart snapshot matching. Decimal strings
+remain strings; the UI does not calculate values or comparison relations. All
+findings and metadata are escaped React text. Successful evidence remains visible
+when another symbol fails or no comparison is available. Source and calculation
+limitations remain distinct and expandable.
+
+HTTP 200 is a completed attempt, not necessarily an answer. The UI distinguishes
+answered, partial, clarification, unsupported, unavailable and backend deadline
+outcomes. Structured HTTP 503 disabled/unconfigured and HTTP 429 busy responses
+are validated too. Endpoint busy is different from a per-symbol 429 provider/budget
+error. Neither implies a known quota reset time or diagnoses an unknown notice.
+Model-call and history-retrieval counters are not exact upstream request counts.
+Unexpected responses/network errors use safe messages without raw bodies.
+
+Evidence shows Alpha Vantage/end-of-day/unadjusted provenance, requested/available/
+returned ranges, actual metric windows and counts, original fetch timestamps and
+cache status. Missing metrics show reasons, never substitute zero. Corporate
+actions and calendar completeness remain unchecked. Raw price change is not total
+return; raw-return variability is not annualized volatility or a reliable investment
+risk measure. Results are descriptive, not recommendations, forecasts or real-time
+prices. No watchlist action or model write tool is added to this page.
+
+### Local startup and manual checks
+
+Keep keys exclusively in private backend configuration. Stop the old backend first,
+then run the existing endpoint locally with one worker:
+
+```sh
+cd /Users/irvin/Documents/MarketSim/backend
+MARKET_DATA_PROVIDER=demo RESEARCH_ENABLED=false REAL_HISTORY_ENABLED=true REAL_RESEARCH_ENABLED=true \
+  .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --env-file .env
+```
+
+This command loads your backend `.env` only when you later execute it. No actual
+environment file was read during implementation or validation. In another terminal:
+
+```sh
+cd /Users/irvin/Documents/MarketSim/frontend
+VITE_REAL_RESEARCH_ENABLED=true VITE_API_BASE_URL=http://127.0.0.1:8000 npm run dev -- --host 127.0.0.1
+```
+
+Vite development startup may load your existing frontend environment files; that
+is a later manual step, not the isolated build used for automated validation.
+Visit `/research`, follow the private-local link, and verify that examples only
+fill the input. Review the dates before submitting: the compact provider snapshot
+moves over time. Each submission may use one Gemini call and up to two provider
+attempts, reduced by cache reuse. Free quotas still apply; do not repeatedly retry
+provider failures or assume the flags make a public deployment appropriate.
+
+Check explicit submission, loading/disabled submission, submitted-question versus
+draft separation, evidence links, unavailable metric reasons, retained AAPL
+evidence when MSFT fails, keyboard focus and announcements, and 320px layout with
+long values. Check disabled direct navigation and link absence with the frontend
+flag off. Verify browser back/unmount does not later display an obsolete result.
+Use mocks for failure cases rather than spending provider attempts to induce them.
+
+### User-reported browser verification — November 7, 2026
+
+Single-stock AAPL research returned `answered`. An AAPL/MSFT comparison for
+2026-10-01 through 2026-10-30 also returned `answered`, with 22 observations for
+each stock. Reported raw price changes were AAPL `"4.332163"` percent and MSFT
+`"1.776521"` percent. The result reported one model call and two history retrievals:
+AAPL reused its cached snapshot and MSFT was newly fetched. The backend-rendered
+comparison, both evidence cards, and expanded source, calculation and workflow
+limitations displayed in the browser.
+
+The earlier MSFT notice's cause remains unknown. This successful response did
+not exercise the revised error classifier, whose live failure behavior remains
+unverified. It does not independently verify provider accuracy, public-display
+permission, or every accessibility, cancellation and error scenario. Automated
+frontend tests remain helper/controller, mocked-hook and static-render coverage,
+not mounted-browser coverage. These are user-reported manual results; no live
+requests were made while recording them.
+
+Tests use synthetic fixtures, mocked fetch, controller/handler checks with mocked
+React hooks, and static React rendering. They are not mounted browser interaction,
+screen-reader or responsive-layout tests. The existing research-watchlist test
+harness only adds a disabled flag substitution for the new navigation link.
+Run the full frontend tests, lint and the fail-fast environment-isolated build
+procedure above; no backend changes or checks are required for this UI milestone.
