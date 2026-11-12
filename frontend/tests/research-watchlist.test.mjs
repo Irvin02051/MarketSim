@@ -116,6 +116,7 @@ function compile(file, dependencies, globals = {}) {
   const code = ts.transpileModule(readFileSync(new URL(file, import.meta.url), 'utf8'), { compilerOptions: {
     module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX,
   } }).outputText.replaceAll('import.meta.env.VITE_API_BASE_URL', JSON.stringify(base))
+    .replaceAll('import.meta.env.VITE_REAL_RESEARCH_ENABLED', '"false"')
   runInNewContext(code, { exports: output.exports, ...globals, require: name => name in dependencies ? dependencies[name] : name.endsWith('.css') ? {} : require(name) })
   return output.exports.default
 }

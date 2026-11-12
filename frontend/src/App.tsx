@@ -7,6 +7,7 @@ import LoginPage from './pages/LoginPage'
 import SignupPage from './pages/SignupPage'
 import DashboardPage from './pages/DashboardPage'
 import ResearchPage from './pages/ResearchPage'
+import RealResearchPage from './pages/RealResearchPage'
 import StockHistoryPage from './pages/StockHistoryPage'
 import './App.css'
 export default function App() {
@@ -18,6 +19,7 @@ export default function App() {
     <Route path="/account" element={<RequireAuth><AccountPage /></RequireAuth>} />
     <Route path="/dashboard" element={<DashboardPage />} />
     <Route path="/research" element={<ResearchPage />} />
+    <Route path="/research/real" element={<RealResearchPage />} />
     <Route path="/stocks/:symbol" element={<StockHistoryPage />} />
     <Route path="*" element={<Navigate to="/login" replace />} />
   </Routes></BrowserRouter>

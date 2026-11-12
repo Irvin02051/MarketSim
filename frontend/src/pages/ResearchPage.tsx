@@ -132,7 +132,7 @@ export default function ResearchPage() {
     <a className="dashboard-skip-link" href="#research-main">Skip to research</a>
     <header className="dashboard-header"><div className="dashboard-header-inner">
       <Link className="dashboard-brand" to="/dashboard">MarketSim<span className="dashboard-brand-dot">.</span></Link>
-      <nav aria-label="Research navigation"><Link className="dashboard-back-link" to="/dashboard">Back to dashboard</Link></nav>
+      <nav aria-label="Research navigation">{import.meta.env.VITE_REAL_RESEARCH_ENABLED === 'true' && <Link className="dashboard-back-link" to="/research/real">Real-data research — private local</Link>} <Link className="dashboard-back-link" to="/dashboard">Back to dashboard</Link></nav>
     </div></header>
     <main className="dashboard-main" id="research-main">
       <div className="dashboard-intro"><p className="dashboard-kicker">EXPLORE WITH EVIDENCE</p>
