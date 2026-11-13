@@ -1,6 +1,7 @@
 import asyncio
 import json
 import unittest
+import zoneinfo
 from datetime import date, datetime, timedelta, timezone
 from unittest.mock import patch
 
@@ -404,6 +405,23 @@ class HistoryTests(unittest.IsolatedAsyncioTestCase):
 class ParserTests(unittest.TestCase):
     def parse(self, data):
         return parse_snapshot(json.dumps(data).encode(), 'AAPL', NOW)
+
+    def test_timezone_validation_without_system_database(self):
+        original_path = zoneinfo.TZPATH
+        zoneinfo.ZoneInfo.clear_cache()
+        zoneinfo.reset_tzpath(())
+        try:
+            for value in ['US/Eastern', 'America/New_York', 'Europe/London']:
+                data = payload()
+                data['Meta Data']['5. Time Zone'] = value
+                self.assertEqual(self.parse(data).provider_timezone, value)
+            for value in ['not/a/zone', '/etc/passwd', '../US/Eastern', '', True, None]:
+                data = payload()
+                data['Meta Data']['5. Time Zone'] = value
+                self.assertIsNone(self.parse(data).provider_timezone)
+        finally:
+            zoneinfo.reset_tzpath(original_path)
+            zoneinfo.ZoneInfo.clear_cache()
 
     def test_nullable_volume_and_unknown_timezone(self):
         data = payload(); del data['Time Series (Daily)']['2026-10-23']['5. volume']
