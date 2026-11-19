@@ -980,3 +980,53 @@ screen-reader or responsive-layout tests. The existing research-watchlist test
 harness only adds a disabled flag substitution for the new navigation link.
 Run the full frontend tests, lint and the fail-fast environment-isolated build
 procedure above; no backend changes or checks are required for this UI milestone.
+
+## Explicit stock discovery
+
+`/stocks/search` is discovery only. Literal `VITE_STOCK_SEARCH_ENABLED=true`
+enables the dashboard link and controls; default false and direct disabled visits
+make no request. Configure the existing `VITE_API_BASE_URL` and the backend opt-in
+search settings described in [backend documentation](../backend/README.md).
+
+Typing and selection never fetch. Search/Retry explicitly submits one request;
+a synchronous gate blocks duplicate submissions. Cancel/unmount abort browser
+waiting and ignore late results; cancellation cannot undo an already-started
+provider attempt. A new submission clears previous selection/results. Requests
+omit cookies/tokens, reject redirects and have a 12-second deadline including body
+reading. Responses undergo strict runtime validation; provider text is escaped by
+React. Empty, unavailable, quota, malformed, timeout and connection states are safe.
+
+Results show exact ticker, company, provider-reported Equity/United States/USD,
+source/fetch/cache metadata and relevance score (not investment quality). Selection
+only updates a local summary. There are intentionally no new chart/research/watchlist
+links: those features remain limited to AAPL/MSFT/NVDA. Search metadata does not prove
+an active listing, particular exchange or downstream availability.
+
+Compatibility remains provisional: a user-run search identified a timezone-format
+validation failure; limited successful checks after corrections are recorded below.
+The backend README lists unverified fields and a one-request verification procedure. After that,
+manual browser checks should cover explicit submission, disabled mode, keyboard
+focus/announcements, local selection, 320px layout, cancellation and errors.
+Frontend tests cover helpers/controllers and static rendering, not mounted-browser
+interaction. No public-display rights are implied by a successful search.
+
+
+Search `provider_timezone` is preserved as required provider-reported display text
+(1–200 characters, no surrounding whitespace or control/format characters). It is
+not interpreted as a verified IANA zone or offset and is not used for conversions
+or claims of session completeness. Search currently retains it in the result model
+without rendering it. Backend and frontend timezone regex restrictions were removed
+after a user-reported `timezone_format` failure; the actual value/row remains unknown.
+Synthetic regression cases are not proof of successful live compatibility.
+
+
+### User-reported manual search verification — November 19, 2026
+
+- Apple search returned HTTP 200 with normalized equity matches.
+- Browser AAPL search displayed Apple Inc and a local selection summary.
+- After name normalization, QQQ search returned HTTP 200 with `matches: []`.
+
+These checks confirm only those tested responses, not universal compatibility
+or ETF support. The exact Equity / United States / USD filter remains unchanged.
+Network-tab verification was not reported. Earlier rejected names/timezone values
+and row identities remain unknown; no raw provider responses are stored here.

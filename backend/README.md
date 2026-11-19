@@ -1522,3 +1522,125 @@ they have not been validated by another live request. No independent price
 accuracy, public-display permission or corporate-action adjustment is established
 by these checks. No raw provider bars, notice bodies or credentials are stored
 in this verification record.
+
+## Opt-in stock discovery (provisional compatibility)
+
+`GET /api/stocks/search?q=company-or-ticker` requires literal
+`STOCK_SEARCH_ENABLED=true` and backend-only `ALPHA_VANTAGE_API_KEY`, independent
+of quote mode. Default is disabled. Queries are trimmed, 1–80 Unicode characters,
+without control/format characters; only one `q` parameter is accepted. Names and
+ticker punctuation are allowed. Invalid input returns 422 before provider access;
+disabled/missing configuration or busy service returns 503, quota/budget 429,
+provider/structure/size/connection failures 502, and timeout 504.
+
+Results contain `query`, `source=alpha_vantage`, timezone-aware `fetched_at`,
+`cache_hit`, and at most 20 matches. Each match contains exact `symbol`, `name`,
+`instrument_type`, `region`, `currency`, `market_open`, `market_close`,
+`provider_timezone`, and string `match_score`. Scores indicate search relevance,
+not investment quality. Only exact Equity / United States / USD rows survive
+filtering. All rows are structurally validated first: malformed out-of-scope rows
+fail the request, while valid out-of-scope rows can produce a successful empty list.
+Unknown fields, duplicate symbols/JSON keys, missing metadata and oversized results
+fail safely. Metadata is not proof of an exchange, active listing or price access.
+
+The provisional upstream fields are `bestMatches` and numbered fields `1. symbol`
+through `9. matchScore` (name, type, region, marketOpen, marketClose, timezone,
+currency in between). These names, the exact Equity/United States values and
+punctuation handling are provisional beyond the limited live checks recorded below.
+Synthetic fixtures reflect examples, not captured provider observations. Strict
+validation intentionally fails closed if the actual contract differs.
+
+Official [SYMBOL_SEARCH documentation](https://www.alphavantage.co/documentation/#symbolsearch)
+checked November 14, 2026 establishes function/keywords/JSON/key parameters and
+relevance scores; its static page does not embed the response schema. Public
+[example reference](https://contextqmd.com/libraries/claude-scientific-skills/versions/2.34.1/pages/scientific-skills/database-lookup/references/alphavantage)
+informed the provisional numbered schema; it is not official documentation.
+[Official support](https://www.alphavantage.co/support/) lists a standard free
+25-request daily allowance; no enhanced allowance is assumed for this project.
+
+Search shares the existing 20-attempt rolling-24-hour process budget with quotes
+and history (failures count). Exact trimmed queries coalesce; cache hits cost no
+attempt. The LRU cache holds at most 32 results for 15 minutes using monotonic expiry,
+retaining original fetch timestamps. At most three distinct searches are in flight.
+The existing lifespan HTTPX client disables redirects/environment proxies; a
+10-second total deadline and 64 KiB decoded-body ceiling bound retrieval. No retries,
+prefetch, demo substitution, new client, or budget. Shutdown cancels pending work.
+Use one local worker. Flags do not authenticate the route or establish display rights.
+
+For one later user-run compatibility check, supply your key privately in the local
+backend environment (never in a URL, chat, logs or command argument). Start:
+
+```sh
+MARKET_DATA_PROVIDER=demo RESEARCH_ENABLED=false REAL_HISTORY_ENABLED=false \
+REAL_RESEARCH_ENABLED=false STOCK_SEARCH_ENABLED=true \
+.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
+```
+
+Then make exactly one request, without retrying errors:
+
+```sh
+curl --get --data-urlencode 'q=Apple' http://127.0.0.1:8000/api/stocks/search
+```
+
+Check the normalized output for source, matches, exact metadata and fetch time.
+A 502 may indicate provisional-schema incompatibility; do not enable raw provider
+logging or loosen the filter. No such live check was run during implementation.
+Existing quotes/charts/research and the database watchlist constraint still accept
+only AAPL/MSFT/NVDA. Search selection does not extend their supported universe.
+
+### Search validation diagnostics
+
+The reported live Apple search returned `Search provider returned invalid data.`;
+a later manual diagnostic identified `field=provider_timezone rule=timezone_format`.
+The rejected value and row remain unknown. This message covers malformed JSON/duplicate keys,
+root/list/row shape, field validation, typed result validation, and the decoded-body
+size ceiling. Provider notices use a different public error message.
+
+The `app.stock_search` logger emits only fixed `stage`, `field`, and `rule`
+identifiers. No values, queries, bodies, URLs or exception text are included.
+`notice` distinguishes quota notices from other notices without their contents.
+Valid empty results emit `empty/no_matches` or `empty/filtered` at INFO; they
+remain successful. The helper rejects identifiers outside its allowlists.
+
+All nine fields remain required strings. Search timezone metadata is now treated
+as provider-reported display text: 1–200 characters, no surrounding whitespace or
+control/format characters. It is not verified as an IANA identifier or UTC offset,
+never used for timestamp conversion, and proves no trading-session completeness.
+The frontend applies the same text checks. No other field rules or scope filter
+changed; malformed out-of-scope rows still fail before filtering. Invalid timezone
+text reports `field=provider_timezone rule=text`; missing fields report `missing`.
+Synthetic tests cover multiple display formats, not the unknown rejected live value.
+Limited user-reported live verification is recorded below; universal compatibility remains unverified.
+
+After loading the updated code yourself, make at most one explicit local search
+and share only the fixed diagnostic line and HTTP status. Do not enable HTTPX
+debug logs, dump provider bodies, or share credentials. The diagnostic narrows
+the failed rule but does not prove that relaxing it is correct. This investigation
+made no live requests or server restarts.
+
+Name failures distinguish fixed rules: `missing`, `wrong_type`, `empty`,
+`over_length`, `control_character`, and `surrounding_whitespace`. Names now remove
+only ordinary ASCII leading/trailing spaces before returning the result. Raw type,
+200-character length and control/format-character checks run before trimming, so
+padding cannot bypass the length limit and tabs/newlines are never silently removed.
+Empty-after-trimming names fail. Other surrounding whitespace remains rejected.
+Internal spacing, punctuation and Unicode letters are preserved exactly. Symbols
+and other metadata are not normalized. Missing fields still fail before filtering.
+No name value, query, provider text or exception is logged.
+
+A later user diagnostic established `field=name rule=surrounding_whitespace`, but
+not the precise value or row. This narrow normalization is covered by synthetic
+tests, including malformed out-of-scope rows; limited live results are recorded below. The frontend already accepts the normalized contract and is unchanged.
+The exact Equity/United States/USD filter is unchanged; no ETF support was added.
+
+
+### User-reported manual search verification — November 19, 2026
+
+- Apple search returned HTTP 200 with normalized equity matches.
+- Browser AAPL search displayed Apple Inc and a local selection summary.
+- After name normalization, QQQ search returned HTTP 200 with `matches: []`.
+
+These checks confirm only those tested responses, not universal compatibility
+or ETF support. The exact Equity / United States / USD filter remains unchanged.
+Network-tab verification was not reported. Earlier rejected names/timezone values
+and row identities remain unknown; no raw provider responses are stored here.

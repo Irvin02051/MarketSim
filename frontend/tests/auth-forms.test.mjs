@@ -127,7 +127,7 @@ function component(path, state) {
   const { outputText } = ts.transpileModule(readFileSync(new URL(path, import.meta.url), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
   })
-  runInNewContext(outputText, { exports: output.exports, require: (name) => {
+  runInNewContext(outputText.replaceAll('import.meta.env.VITE_STOCK_SEARCH_ENABLED', '"false"'), { exports: output.exports, require: (name) => {
     if (name === '../auth/authContext') return { useAuth: () => state }
     if (name === '../lib/auth') return actions
     if (name === 'react-router-dom') return { useNavigate: () => () => {}, useLocation: () => ({ state: null }), Link: ({ to, children, ...props }) => createElement('a', { ...props, href: to }, children) }
@@ -205,7 +205,7 @@ function handlers(path, status, sdk, routerState = null) {
   const { outputText } = ts.transpileModule(readFileSync(new URL(path, import.meta.url), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
   })
-  runInNewContext(outputText, { exports: output.exports, document: { getElementById: () => ({ focus() {} }) }, require: (name) => {
+  runInNewContext(outputText.replaceAll('import.meta.env.VITE_STOCK_SEARCH_ENABLED', '"false"'), { exports: output.exports, document: { getElementById: () => ({ focus() {} }) }, require: (name) => {
     if (name === 'react') return hooks
     if (name === '../auth/authContext') return { useAuth: () => ({ status }) }
     if (name === '../lib/auth') return { ...actions, getBrowserAuthClient: () => ({ auth: sdk }), browserCallback: () => callback }
