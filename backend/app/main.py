@@ -28,6 +28,7 @@ from app.real_research_plan import RealResearchInput
 from app.research_agent import AgentInput, AgentResult, ResearchAgent
 from app.research_explanation import ResearchExplanation, ResearchInput, ResearchResult
 from app.research_explanation import explanation as research_outcome
+from app.stock_search import SearchResult, StockSearch
 from app.watchlist import WatchlistService
 from app.watchlist import router as watchlist_router
 
@@ -49,6 +50,10 @@ async def lifespan(app: FastAPI):
         app.state.watchlist = WatchlistService.configured(data_client)
         app.state.identity = IdentityVerifier.configured(auth_client)
         budget = ProviderBudget()
+        search = StockSearch(client, budget=budget,
+                             enabled=os.environ.get("STOCK_SEARCH_ENABLED", "false") == "true",
+                             api_key=os.environ.get("ALPHA_VANTAGE_API_KEY", ""))
+        app.state.stock_search = search
         service = MarketData(client, budget=budget)
         app.state.market_data = service
         app.state.real_history_enabled = os.environ.get('REAL_HISTORY_ENABLED', 'false') == 'true'
@@ -80,7 +85,10 @@ async def lifespan(app: FastAPI):
                 try:
                     await history.close()
                 finally:
-                    await service.close()
+                    try:
+                        await search.close()
+                    finally:
+                        await service.close()
 
 
 app = FastAPI(title='MarketSim API', lifespan=lifespan)
@@ -108,6 +116,17 @@ async def get_me(response: Response, identity: Annotated[Identity, Depends(requi
 def get_health() -> dict[str, str]:
     """Confirm the API responds, without checking external services."""
     return {'status': 'ok', 'service': 'marketsim-api'}
+
+
+@app.get('/api/stocks/search', response_model=SearchResult)
+async def search_stocks(request: Request, response: Response, q: str = '') -> SearchResult:
+    response.headers['Cache-Control'] = 'no-store'
+    if set(request.query_params) != {'q'} or len(request.query_params.getlist('q')) != 1:
+        raise HTTPException(status_code=422, detail='Supply only q, once.')
+    try:
+        return await request.app.state.stock_search.search(q)
+    except QuoteError as error:
+        raise HTTPException(status_code=error.status, detail=error.detail) from None
 
 
 @app.get('/api/stocks/{symbol}/quote', response_model=Quote)

@@ -55,6 +55,7 @@ export default function DashboardPage() {
             <span>MarketSim<span className="dashboard-brand-dot">.</span></span>
           </Link>
           <nav className="dashboard-navigation" aria-label="Dashboard navigation">
+            {import.meta.env.VITE_STOCK_SEARCH_ENABLED === 'true' && <Link className="dashboard-back-link" to="/stocks/search">Discover stocks</Link>}
             <Link className="dashboard-back-link" to="/research">Stock research</Link>
             {auth.status === 'signed_in' && <Link className="dashboard-back-link" to="/account">Account</Link>}
             {auth.status === 'signed_in' && <Link className="dashboard-back-link" to="/watchlist">My watchlist</Link>}

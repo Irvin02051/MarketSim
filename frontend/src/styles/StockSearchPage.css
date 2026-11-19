@@ -1,0 +1,10 @@
+.stock-search { max-width: 56rem; margin: 0 auto; padding: 1.25rem; overflow-wrap: anywhere; }
+.stock-search form { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; }
+.stock-search label { flex-basis: 100%; }
+.stock-search input { min-width: 0; width: 100%; max-width: 28rem; padding: .7rem; }
+.stock-search button { padding: .7rem 1rem; cursor: pointer; }
+.stock-search button:disabled { cursor: not-allowed; }
+.stock-search :focus-visible { outline: 3px solid #5179dc; outline-offset: 3px; }
+.stock-search ul { padding: 0; list-style: none; display: grid; gap: 1rem; }
+.stock-search li { border: 1px solid #8b95a7; border-radius: .5rem; padding: 1rem; min-width: 0; }
+.stock-search h2 { font-size: 1.15rem; }
