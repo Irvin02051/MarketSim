@@ -167,7 +167,8 @@ export type ProviderHistoryResult = {
   cache_hit: boolean; provider_timezone: string | null; limitations: string[]
   bars: { date: string; open: number; high: number; low: number; close: number; volume: number | null }[]
 }
-export type ChartHistory = HistoryResult | ProviderHistoryResult
+export type DiscoveredHistoryResult = Omit<ProviderHistoryResult, 'symbol'> & { symbol: string }
+export type ChartHistory = HistoryResult | ProviderHistoryResult | DiscoveredHistoryResult
 export const providerHistoryEnabled = (value: unknown) => value === 'true'
 export function initialProviderDates(now = new Date()): DateRange {
   const today = utcDate(iso(now))
@@ -183,7 +184,16 @@ export function validateProviderDates(range: DateRange): DateRange {
 export function parseProviderHistory(value: unknown): ProviderHistoryResult {
   const d = object(value)
   const symbol = historySymbol(typeof d.symbol === 'string' ? d.symbol : undefined)
-  if (!symbol || symbol !== d.symbol || d.currency !== 'USD' || d.source !== 'alpha_vantage'
+  if (!symbol || d.symbol !== symbol) return invalid()
+  return parseDailyProviderHistory(value, symbol) as ProviderHistoryResult
+}
+export function parseDiscoveredHistory(value: unknown, expectedSymbol: string): DiscoveredHistoryResult {
+  if (!/^[A-Za-z0-9][A-Za-z0-9.\-^/]{0,31}$/.test(expectedSymbol)) return invalid()
+  return parseDailyProviderHistory(value, expectedSymbol)
+}
+function parseDailyProviderHistory(value: unknown, symbol: string): DiscoveredHistoryResult {
+  const d = object(value)
+  if (symbol !== d.symbol || d.currency !== 'USD' || d.source !== 'alpha_vantage'
     || d.data_kind !== 'end_of_day' || d.adjustment_basis !== 'unadjusted' || d.interval !== 'daily'
     || d.coverage !== 'within_snapshot_bounds' || typeof d.cache_hit !== 'boolean'
     || 'fixture_range' in d || 'observation_calendar' in d || 'label' in d) return invalid()

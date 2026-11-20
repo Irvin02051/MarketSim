@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+import secrets
 import time
 import unicodedata
 from collections import OrderedDict
@@ -47,6 +48,7 @@ class SearchMatch(BaseModel):
 class SearchResult(BaseModel):
     model_config = ConfigDict(frozen=True, extra='forbid')
     query: str
+    selection_ref: str
     matches: tuple[SearchMatch, ...]
     source: Literal['alpha_vantage'] = 'alpha_vantage'
     fetched_at: datetime
@@ -186,10 +188,21 @@ class StockSearch:
         self.clock, self.utcnow = clock, utcnow
         self.cache = OrderedDict()
         self.inflight = {}
+        self.closed = False
+
+    def resolve(self, reference: str, symbol: str) -> SearchMatch:
+        if self.closed or not self.enabled or not self.api_key.strip():
+            raise QuoteError(503, 'Stock search is disabled or unavailable.')
+        for expiry, result in self.cache.values():
+            if self.clock() < expiry and result.selection_ref == reference:
+                for match in result.matches:
+                    if match.symbol == symbol:
+                        return match
+        raise QuoteError(409, 'Selection evidence expired or unavailable. Search again explicitly.')
 
     async def search(self, query: str) -> SearchResult:
         query = query_text(query)
-        if not self.enabled or not self.api_key.strip():
+        if self.closed or not self.enabled or not self.api_key.strip():
             raise QuoteError(503, 'Stock search is disabled or unavailable.')
         cached = self.cache.get(query)
         if cached and self.clock() < cached[0]:
@@ -211,10 +224,13 @@ class StockSearch:
             task.exception()
 
     async def close(self):
+        self.closed = True
         tasks = list(self.inflight.values())
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        self.inflight.clear()
+        self.cache.clear()
 
     async def _bounded_fetch(self, query):
         try:
@@ -240,7 +256,7 @@ class StockSearch:
                 if len(body) > MAX_BYTES:
                     _diagnostic('body', 'none', 'size')
                     raise QuoteError(502, 'Search provider returned invalid data.')
-        result = SearchResult(query=query, matches=parse_matches(bytes(body)), fetched_at=self.utcnow())
+        result = SearchResult(query=query, selection_ref=secrets.token_hex(16), matches=parse_matches(bytes(body)), fetched_at=self.utcnow())
         self.cache[query] = (self.clock() + TTL, result)
         self.cache.move_to_end(query)
         while len(self.cache) > CAPACITY:

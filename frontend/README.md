@@ -998,8 +998,9 @@ React. Empty, unavailable, quota, malformed, timeout and connection states are s
 
 Results show exact ticker, company, provider-reported Equity/United States/USD,
 source/fetch/cache metadata and relevance score (not investment quality). Selection
-only updates a local summary. There are intentionally no new chart/research/watchlist
-links: those features remain limited to AAPL/MSFT/NVDA. Search metadata does not prove
+only updates a local summary. There are no new research/watchlist links. The separate opt-in discovered-history
+panel described below can load history; existing stock-page routes remain limited
+to AAPL/MSFT/NVDA. Search metadata does not prove
 an active listing, particular exchange or downstream availability.
 
 Compatibility remains provisional: a user-run search identified a timezone-format
@@ -1030,3 +1031,49 @@ These checks confirm only those tested responses, not universal compatibility
 or ETF support. The exact Equity / United States / USD filter remains unchanged.
 Network-tab verification was not reported. Earlier rejected names/timezone values
 and row identities remain unknown; no raw provider responses are stored here.
+
+## Explicit history for discovered equities
+
+With both `VITE_STOCK_SEARCH_ENABLED=true` and `VITE_REAL_HISTORY_ENABLED=true`,
+selecting a search result shows dates and **Load price history**. Selection itself,
+rendering and date editing do not fetch. Load uses the backend-issued selection
+reference and exact selected symbol; no client company/currency/type metadata is
+sent. The backend also requires both opt-ins and validates cached eligibility.
+
+Search now includes a required `selection_ref`; frontend/backend must be updated
+together. References expire after 15 minutes and may be evicted or lost on backend
+restart. Expired-reference feedback asks for a fresh explicit search, never silently
+retries. Changing query/selection or submitting a new search removes obsolete history;
+date changes clear history and cancel pending browser waiting. The keyed history
+component cleans up on unmount and ignores late completions. Duplicate Loads are
+gated synchronously. Cancellation cannot undo a provider attempt already started.
+History errors stay local to the selected panel; search results remain visible.
+
+The existing chart/table renders the separately validated discovered result, with
+source, raw/unadjusted labels, requested/available/returned ranges, fetch/cache status
+and limitations. Exact punctuation is preserved. Existing `/stocks/:symbol`, quote,
+metrics, research and watchlist features remain AAPL/MSFT/NVDA-only. No Gemini,
+quote or metric request is triggered by this panel. Flags are not authentication or
+public-display permission; use private local development only pending data rights.
+
+Offline coverage includes helpers, controllers, static rendering and directly
+invoked component handlers—not a mounted-browser test. Later manually check a
+single eligible non-original equity using the backend README procedure, then verify
+keyboard focus, status announcements, 320px layout, selection/date/query cancellation,
+expired-evidence feedback and retained search results on failure. The compact
+snapshot moves over time; an explicit requested range may be unavailable.
+
+
+### User-reported discovered-history verification — November 20, 2026
+
+- Searching and selecting IBM successfully loaded real provider history.
+- The chart and expanded table displayed IBM observations.
+- Changing the requested range reused the cached snapshot with unchanged
+  `fetched_at: 2026-11-20T21:43:14.840336Z`.
+- Requested October 24–November 19, 2026 returned October 26–November 19:
+  19 observations, without inventing missing dates.
+
+These checks establish only the tested IBM retrieval, rendering and cache flow.
+They do not establish universal symbol compatibility, exchange-calendar
+completeness, independent price verification, full browser coverage or
+public-display permission. No raw provider bars or credentials are recorded here.

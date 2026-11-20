@@ -17,6 +17,7 @@ from app.gemini_client import DEFAULT_MODEL, GeminiClient, configured_client
 from app.historical_data import HistoricalInput, HistoricalResult, get_history
 from app.market_data import MarketData, ProviderBudget, Quote, QuoteError
 from app.real_history import (
+    DiscoveredHistoryResult,
     HistoricalService,
     HistoryError,
     HistoryRequest,
@@ -127,6 +128,38 @@ async def search_stocks(request: Request, response: Response, q: str = '') -> Se
         return await request.app.state.stock_search.search(q)
     except QuoteError as error:
         raise HTTPException(status_code=error.status, detail=error.detail) from None
+
+
+@app.get('/api/stocks/discovered/history', response_model=DiscoveredHistoryResult, responses={
+    409: {'description': 'Selection evidence unavailable; perform an explicit search again'},
+    422: {'description': 'Invalid input or snapshot range unavailable; available_range when known'},
+    429: {'description': 'Shared attempt budget or provider quota exhausted'},
+    502: {'description': 'Safe provider failure'},
+    503: {'description': 'Disabled, unconfigured or busy'},
+    504: {'description': 'Provider timeout'},
+})
+async def discovered_history(request: Request, response: Response,
+                             selection_ref: str = '', symbol: str = '', start_date: str = '', end_date: str = ''):
+    response.headers['Cache-Control'] = 'no-store'
+    fields = {'selection_ref', 'symbol', 'start_date', 'end_date'}
+    if set(request.query_params) != fields or any(len(request.query_params.getlist(f)) != 1 for f in fields):
+        raise HTTPException(422, 'Supply only selection_ref, symbol, start_date and end_date, once each.')
+    try:
+        start, end = date.fromisoformat(start_date), date.fromisoformat(end_date)
+        if start.isoformat() != start_date or end.isoformat() != end_date or not 0 <= (end-start).days < 90:
+            raise ValueError('Invalid range')
+    except ValueError:
+        raise HTTPException(422, 'Use exact YYYY-MM-DD dates, ordered and at most 90 calendar days inclusive.') from None
+    if not request.app.state.real_history_enabled:
+        raise HTTPException(503, 'Provider history is disabled.')
+    try:
+        selection = request.app.state.stock_search.resolve(selection_ref, symbol)
+        return await request.app.state.historical_data.get_discovered_history(selection, start, end)
+    except QuoteError as error:
+        content = {'detail': error.detail}
+        if isinstance(error, HistoryError) and error.available_range is not None:
+            content['available_range'] = error.available_range.model_dump(mode='json')
+        return JSONResponse(status_code=error.status, content=content)
 
 
 @app.get('/api/stocks/{symbol}/quote', response_model=Quote)

@@ -1586,7 +1586,8 @@ Check the normalized output for source, matches, exact metadata and fetch time.
 A 502 may indicate provisional-schema incompatibility; do not enable raw provider
 logging or loosen the filter. No such live check was run during implementation.
 Existing quotes/charts/research and the database watchlist constraint still accept
-only AAPL/MSFT/NVDA. Search selection does not extend their supported universe.
+only AAPL/MSFT/NVDA. Search selection does not extend their supported universe; the separate discovered-history
+route described below is the only new-symbol retrieval flow.
 
 ### Search validation diagnostics
 
@@ -1644,3 +1645,74 @@ These checks confirm only those tested responses, not universal compatibility
 or ETF support. The exact Equity / United States / USD filter remains unchanged.
 Network-tab verification was not reported. Earlier rejected names/timezone values
 and row identities remain unknown; no raw provider responses are stored here.
+
+## Discovered-stock daily history
+
+Search results now include an opaque `selection_ref` (32 random hexadecimal
+characters) tied to the existing validated search-cache entry. It is eligibility
+evidence, not a user credential or authentication. A reference permits only exact
+symbols already present in that entry's Equity / United States / USD matches.
+The server ignores no client metadata: extra name/currency/type/region parameters
+are rejected. Currency is taken from the validated match, not inferred from a ticker.
+
+`GET /api/stocks/discovered/history?selection_ref=…&symbol=…&start_date=…&end_date=…`
+requires all four parameters exactly once, with exact YYYY-MM-DD inclusive bounds
+and at most 90 calendar dates. Both `STOCK_SEARCH_ENABLED=true` and
+`REAL_HISTORY_ENABLED=true`, plus the backend provider key, are required. Existing
+quote mode can remain demo. A valid reference is required even on a history cache hit.
+Do not use this route as a way to expand other endpoints' symbol contracts.
+
+References expire with the search result after 15 minutes, do not renew on cache
+hits, and become invalid on search-cache LRU eviction (32 entries), replacement,
+shutdown or process restart. HTTP 409 means explicitly search and select again;
+there is no automatic re-search. Missing parameters are 422. Disabled/missing
+configuration or three occupied history fetch slots returns safe 503. Other statuses:
+200 for data or an explicitly empty interval within snapshot bounds; 422 for invalid
+input/range-unavailable (with `available_range` when known); 429 budget/quota;
+502 upstream/connection/invalid-data failure; 504 timeout. No raw provider errors.
+
+History retrieval reuses the same fixed TIME_SERIES_DAILY request, parser, lifespan
+HTTPX client and shared quote/search/history 20-attempt budget. Provider symbol
+punctuation is forwarded unchanged and response identity must match exactly. The
+shared history cache is now a 32-symbol LRU with the existing six-hour monotonic
+TTL; cache hits preserve fetched_at. At most three distinct history fetches are
+in flight, with same-symbol coalescing. Cancelling one waiter does not cancel a
+shared fetch; shutdown cancels and drains tasks and clears caches. No retries or
+extra warm-up observations. Use one local worker; caches/references/budgets are
+process-local, so restarts invalidate selections and multiple workers do not share state.
+
+The separate `DiscoveredHistoryResult` preserves raw/unadjusted provenance, exact
+symbol, USD currency, requested/available/returned ranges, timestamps, nullable
+volume, coverage and ordered OHLCV bars. Its source limitations do not promise new
+symbol metrics. `RealHistoryResult`, existing history/metrics endpoints, quotes,
+research tools, demo fixtures and watchlist database constraints remain three-symbol
+contracts. Selection does not prove an active listing, history availability,
+exchange-calendar completeness, adjustment support or public-display rights.
+
+### Later private-local check (not executed automatically)
+
+Privately configure the existing backend key, then run one backend worker bound to
+127.0.0.1 with search/history enabled, demo quotes, and both research flags disabled.
+In the frontend enable search and real history with the existing API base URL.
+Search explicitly for one equity outside AAPL/MSFT/NVDA (for example, IBM), select
+an eligible returned row, then choose a recent short range and click **Load price
+history** once. Search and an uncached Load each consume an upstream attempt.
+Inspect exact symbol, provenance, ranges, nullable data, chart/table and limitations.
+A repeat Load within cache expiry should reuse fetched_at; do not automatically
+retry provider/quota failures. A stale selection requires explicit Search again.
+No live compatibility for discovered-symbol history is established by mocked tests.
+
+
+### User-reported discovered-history verification — November 20, 2026
+
+- Searching and selecting IBM successfully loaded real provider history.
+- The chart and expanded table displayed IBM observations.
+- Changing the requested range reused the cached snapshot with unchanged
+  `fetched_at: 2026-11-20T21:43:14.840336Z`.
+- Requested October 24–November 19, 2026 returned October 26–November 19:
+  19 observations, without inventing missing dates.
+
+These checks establish only the tested IBM retrieval, rendering and cache flow.
+They do not establish universal symbol compatibility, exchange-calendar
+completeness, independent price verification, full browser coverage or
+public-display permission. No raw provider bars or credentials are recorded here.
