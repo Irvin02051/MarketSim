@@ -1,4 +1,4 @@
-"""Internal compact daily retrieval. Never used by existing routes or agent tools."""
+"""Shared compact daily retrieval with distinct original/discovery contracts."""
 
 import asyncio
 import json
@@ -6,12 +6,13 @@ import logging
 import os
 import re
 import time
+from collections import OrderedDict
 from datetime import date, datetime, timezone
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
 from app.historical_data import (
     DailyBar,
@@ -29,6 +30,7 @@ from app.market_data import (
     QuoteError,
     notice_quota_rule,
 )
+from app.stock_search import SearchMatch
 
 logger = logging.getLogger(__name__)
 FAILURE_CATEGORIES = frozenset({
@@ -50,6 +52,8 @@ def _log_failure(category, symbol, *, upstream_status=None, local_attempt_count=
 
 
 FETCH_DEADLINE = 10.0
+CACHE_CAPACITY = 32
+INFLIGHT_CAPACITY = 3
 MAX_BODY_BYTES = 256 * 1024
 LIMITATIONS = (
     'Raw, unadjusted observations; splits and dividends are not handled or detected.',
@@ -76,8 +80,8 @@ class HistoryRequest(HistoricalInput):
         return self
 
 
-class RealHistoryResult(HistoryModel):
-    symbol: Literal['AAPL', 'MSFT', 'NVDA']
+class ProviderHistoryResult(HistoryModel):
+    symbol: str = Field(pattern=r'^[A-Za-z0-9][A-Za-z0-9.\-^/]{0,31}$')
     currency: Literal['USD'] = 'USD'
     source: Literal['alpha_vantage'] = 'alpha_vantage'
     data_kind: Literal['end_of_day'] = 'end_of_day'
@@ -120,8 +124,20 @@ class RealHistoryResult(HistoryModel):
         return self
 
 
-class Snapshot(HistoryModel):
+class RealHistoryResult(ProviderHistoryResult):
     symbol: Literal['AAPL', 'MSFT', 'NVDA']
+
+
+class DiscoveredHistoryResult(ProviderHistoryResult):
+    limitations: tuple[str, ...] = (
+        LIMITATIONS[0],
+        'Discovered history does not enable quotes, metrics, research or watchlists for new symbols.',
+        *LIMITATIONS[2:],
+    )
+
+
+class Snapshot(HistoryModel):
+    symbol: str = Field(pattern=r'^[A-Za-z0-9][A-Za-z0-9.\-^/]{0,31}$')
     bars: tuple[DailyBar, ...]
     fetched_at: datetime
     provider_timezone: str | None
@@ -202,7 +218,7 @@ class HistoricalService:
         self.client, self.budget, self.mode = client, budget, mode
         self.api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '') if api_key is None else api_key
         self.clock, self.utcnow, self.deadline = clock, utcnow, deadline
-        self.cache: dict[str, tuple[float, Snapshot]] = {}
+        self.cache: OrderedDict[str, tuple[float, Snapshot]] = OrderedDict()
         self.inflight: dict[str, asyncio.Task] = {}
         self.closed = False
 
@@ -214,26 +230,43 @@ class HistoricalService:
             return get_history(HistoricalInput(**validated.model_dump()))
         if self.mode != 'alpha_vantage':
             raise HistoryError(503, 'History mode must be demo or alpha_vantage.')
-        symbol = validated.symbol
+        return await self._provider_history(validated.symbol, validated.start_date, validated.end_date, RealHistoryResult)
+
+    async def get_discovered_history(self, selection: SearchMatch, start: date, end: date) -> DiscoveredHistoryResult:
+        # Selection must come from StockSearch.resolve; never accept client metadata here.
+        if self.closed or self.mode != 'alpha_vantage':
+            raise HistoryError(503, 'Provider history is unavailable.')
+        if (selection.instrument_type, selection.region, selection.currency) != ('Equity', 'United States', 'USD'):
+            raise HistoryError(409, 'Selection evidence unavailable. Search again explicitly.')
+        DateRange(start=start, end=end)
+        if (end - start).days >= 90:
+            raise HistoryError(422, 'Requested range must contain at most 90 calendar days.')
+        return await self._provider_history(selection.symbol, start, end, DiscoveredHistoryResult,
+                                            currency=selection.currency)
+
+    async def _provider_history(self, symbol, start, end, result_type, *, currency='USD'):
         cached = self.cache.get(symbol)
         hit = cached is not None and self.clock() < cached[0]
         if hit:
             snapshot = cached[1]
+            self.cache.move_to_end(symbol)
         else:
             task = self.inflight.get(symbol)
             if task is None:
+                if len(self.inflight) >= INFLIGHT_CAPACITY:
+                    raise HistoryError(503, 'History service is busy. Try again later.')
                 task = asyncio.create_task(self._fetch(symbol))
                 self.inflight[symbol] = task
                 task.add_done_callback(lambda done: self._completed(symbol, done))
             snapshot = await asyncio.shield(task)
         available = DateRange(start=snapshot.bars[0].date, end=snapshot.bars[-1].date)
-        requested = DateRange(start=validated.start_date, end=validated.end_date)
+        requested = DateRange(start=start, end=end)
         if requested.start < available.start or requested.end > available.end:
             raise HistoryError(422, 'Requested range is unavailable in the compact snapshot.',
                                available_range=available)
         bars = tuple(bar for bar in snapshot.bars if requested.start <= bar.date <= requested.end)
-        return RealHistoryResult(
-            symbol=symbol, requested_range=requested, available_range=available,
+        return result_type(
+            symbol=symbol, currency=currency, requested_range=requested, available_range=available,
             returned_range=DateRange(start=bars[0].date, end=bars[-1].date) if bars else None,
             status='ok' if bars else 'empty', fetched_at=snapshot.fetched_at, cache_hit=hit,
             provider_timezone=snapshot.provider_timezone, bars=bars,
@@ -272,6 +305,9 @@ class HistoricalService:
         snapshot = parse_snapshot(body, symbol, self.utcnow(), upstream_status=200,
                                   local_attempt_count=len(self.budget.attempts))
         self.cache[symbol] = (self.clock() + TTL, snapshot)
+        self.cache.move_to_end(symbol)
+        while len(self.cache) > CACHE_CAPACITY:
+            self.cache.popitem(last=False)
         return snapshot
 
     async def _read(self, symbol):

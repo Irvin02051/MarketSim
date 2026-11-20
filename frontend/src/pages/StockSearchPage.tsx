@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import DiscoveredHistory from '../components/DiscoveredHistory'
 import { Link } from 'react-router-dom'
 import { createSearchController, requestSearch, searchMessages } from '../lib/stockSearch'
 import type { SearchState } from '../lib/stockSearch'
@@ -18,12 +19,12 @@ export default function StockSearchPage() {
   return <main className="stock-search">
     <Link to="/dashboard">Demo dashboard</Link>
     <h1>Discover stocks</h1>
-    <p>Search Alpha Vantage for provider-reported U.S. equities in USD. Discovery only: a match does not guarantee quotes, history, an active listing, or a particular exchange.</p>
-    <p>Charts, research and personal watchlists still support only AAPL, MSFT and NVDA. Selection here does not save a stock or fetch prices.</p>
+    <p>Search Alpha Vantage for provider-reported U.S. equities in USD. A match does not guarantee quotes, history, an active listing, or a particular exchange.</p>
+    <p>Existing stock pages, quotes, metrics, research and personal watchlists still support only AAPL, MSFT and NVDA. Selection here does not save a stock or fetch prices.</p>
     {!enabled && <p role="status">Stock search is disabled in this configuration.</p>}
     <form onSubmit={event => { event.preventDefault(); if (enabled) void controller.current?.submit(query) }}>
       <label htmlFor="stock-query">Company name or ticker</label>
-      <input id="stock-query" value={query} onChange={event => setQuery(event.target.value)} disabled={!enabled || loading} maxLength={160} />
+      <input id="stock-query" value={query} onChange={event => { controller.current?.cancel(); setQuery(event.target.value); setState({ status: 'idle' }) }} disabled={!enabled || loading} maxLength={160} />
       <button type="submit" disabled={!enabled || loading}>{loading ? 'Searching…' : state.status === 'error' ? 'Retry search' : 'Search'}</button>
       {loading && <button type="button" onClick={() => controller.current?.cancel()}>Cancel search</button>}
     </form>
@@ -32,9 +33,11 @@ export default function StockSearchPage() {
       {state.status === 'error' && <p>{searchMessages[state.code]}</p>}
       {state.status === 'loaded' && <>
         <p>{state.result.matches.length ? `${state.result.matches.length} matches for ${state.result.query}.` : `No in-scope matches for ${state.result.query}.`}</p>
-        {state.selected && <p>Selected {state.selected.name} ({state.selected.symbol}) for local review only. No additional request was made.</p>}
+        {state.selected && <p>Selected {state.selected.name} ({state.selected.symbol}) for review. Selection itself makes no additional request.</p>}
       </>}
     </div>
+      {enabled && import.meta.env.VITE_REAL_HISTORY_ENABLED === 'true' && state.status === 'loaded' && state.selected &&
+      <DiscoveredHistory key={`${state.result.selection_ref}:${state.selected.symbol}`} reference={state.result.selection_ref} selected={state.selected} />}
     {state.status === 'loaded' && <>
       <p>Source: Alpha Vantage · Retrieved: {state.result.fetched_at} · {state.result.cache_hit ? 'Cached search' : 'New search'}. Retrieval time does not establish listing freshness.</p>
       <ul>{state.result.matches.map(row => <li key={row.symbol}>

@@ -3,7 +3,7 @@ import { identityUrl } from './identity.ts'
 // provider_timezone is bounded provider-reported text, not a verified timezone identifier.
 export type SearchMatch = { symbol: string; name: string; instrument_type: 'Equity'; region: 'United States';
   currency: 'USD'; market_open: string; market_close: string; provider_timezone: string; match_score: string }
-export type SearchResult = { query: string; matches: SearchMatch[]; source: 'alpha_vantage'; fetched_at: string; cache_hit: boolean }
+export type SearchResult = { query: string; selection_ref: string; matches: SearchMatch[]; source: 'alpha_vantage'; fetched_at: string; cache_hit: boolean }
 export type SearchCode = 'invalid' | 'configuration' | 'unavailable' | 'quota' | 'timeout' | 'network' | 'malformed'
 export const searchMessages: Record<SearchCode, string> = {
   invalid: 'Enter 1–80 characters without control characters.', configuration: 'Search configuration is unavailable.',
@@ -24,8 +24,8 @@ const exact = (v: Record<string, unknown>, keys: string[]) => Object.keys(v).len
 const text = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && [...v].length <= 200 && v === v.trim() && !/\p{C}/u.test(v)
 export function parseSearch(value: unknown, query: string): SearchResult {
   const fail = () => { throw new SearchError('malformed') }
-  if (!object(value) || !exact(value, ['query', 'matches', 'source', 'fetched_at', 'cache_hit'])) return fail()
-  if (value.query !== query || value.source !== 'alpha_vantage' || typeof value.cache_hit !== 'boolean'
+  if (!object(value) || !exact(value, ['query', 'selection_ref', 'matches', 'source', 'fetched_at', 'cache_hit'])) return fail()
+  if (typeof value.selection_ref !== 'string' || !/^[a-f0-9]{32}$/.test(value.selection_ref) || value.query !== query || value.source !== 'alpha_vantage' || typeof value.cache_hit !== 'boolean'
     || typeof value.fetched_at !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/.test(value.fetched_at)
     || !Number.isFinite(Date.parse(value.fetched_at)) || !Array.isArray(value.matches) || value.matches.length > 20) return fail()
   const seen = new Set<string>()
@@ -40,7 +40,7 @@ export function parseSearch(value: unknown, query: string): SearchResult {
     seen.add(r.symbol)
     return { ...r }
   })
-  return { query, matches, source: 'alpha_vantage', fetched_at: value.fetched_at, cache_hit: value.cache_hit }
+  return { query, selection_ref: value.selection_ref, matches, source: 'alpha_vantage', fetched_at: value.fetched_at, cache_hit: value.cache_hit }
 }
 export async function requestSearch(base: unknown, input: string, signal: AbortSignal, timeoutMs = 12000): Promise<SearchResult> {
   const query = normalizeQuery(input)

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { parseSearch, requestSearch, createSearchController, normalizeQuery } from '../src/lib/stockSearch.ts'
 const match = () => ({ symbol: 'TEST.A', name: 'Synthetic & Co', instrument_type: 'Equity', region: 'United States', currency: 'USD', market_open: '09:30', market_close: '16:00', provider_timezone: 'UTC-04', match_score: '0.9000' })
-const fixture = () => ({ query: 'Test', matches: [match()], source: 'alpha_vantage', fetched_at: '2026-11-14T12:00:00Z', cache_hit: false })
+const fixture = () => ({ query: 'Test', selection_ref: 'a'.repeat(32), matches: [match()], source: 'alpha_vantage', fetched_at: '2026-11-14T12:00:00Z', cache_hit: false })
 const base = 'http://127.0.0.1:8000'
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r }); return { promise, resolve } }
 test('strict provisional parser and query validation', () => {
@@ -69,6 +69,7 @@ test('static page disables search and escapes provider text (not mounted-browser
     const exports = {}
     runInNewContext(code, { exports, __env: { VITE_STOCK_SEARCH_ENABLED: enabled }, require: name => {
       if (name.endsWith('.css')) return {}
+      if (name === '../components/DiscoveredHistory') return { default: () => null }
       if (name === 'react') return { ...require('react'), useEffect: () => {}, useRef: () => ({ current: null }), useState: initial => [typeof initial === 'string' ? '' : state, () => {}] }
       if (name === 'react-router-dom') return { Link: ({ to, children }) => createElement('a', { href: to }, children) }
       if (name === '../lib/stockSearch') return { createSearchController, searchMessages: {} }
