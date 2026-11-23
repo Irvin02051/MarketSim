@@ -20,7 +20,7 @@ export default function StockSearchPage() {
     <Link to="/dashboard">Demo dashboard</Link>
     <h1>Discover stocks</h1>
     <p>Search Alpha Vantage for provider-reported U.S. equities in USD. A match does not guarantee quotes, history, an active listing, or a particular exchange.</p>
-    <p>Existing stock pages, quotes, metrics, research and personal watchlists still support only AAPL, MSFT and NVDA. Selection here does not save a stock or fetch prices.</p>
+    <p>Existing stock pages, quotes, research and personal watchlists still support only AAPL, MSFT and NVDA. Selection here does not save a stock or fetch prices.</p>
     {!enabled && <p role="status">Stock search is disabled in this configuration.</p>}
     <form onSubmit={event => { event.preventDefault(); if (enabled) void controller.current?.submit(query) }}>
       <label htmlFor="stock-query">Company name or ticker</label>

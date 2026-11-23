@@ -23,7 +23,12 @@ from app.real_history import (
     HistoryRequest,
     RealHistoryResult,
 )
-from app.real_history_metrics import RealHistoryMetrics, calculate_real_history_metrics
+from app.real_history_metrics import (
+    DiscoveredHistoryMetrics,
+    RealHistoryMetrics,
+    calculate_discovered_history_metrics,
+    calculate_real_history_metrics,
+)
 from app.real_research import MESSAGES, RealResearch, RealResearchResult
 from app.real_research_plan import RealResearchInput
 from app.research_agent import AgentInput, AgentResult, ResearchAgent
@@ -140,18 +145,22 @@ async def search_stocks(request: Request, response: Response, q: str = '') -> Se
 })
 async def discovered_history(request: Request, response: Response,
                              selection_ref: str = '', symbol: str = '', start_date: str = '', end_date: str = ''):
+    return await _discovered_history(request, response, selection_ref, symbol, start_date, end_date)
+
+
+async def _discovered_history(request, response, selection_ref, symbol, start_date, end_date):
     response.headers['Cache-Control'] = 'no-store'
     fields = {'selection_ref', 'symbol', 'start_date', 'end_date'}
     if set(request.query_params) != fields or any(len(request.query_params.getlist(f)) != 1 for f in fields):
-        raise HTTPException(422, 'Supply only selection_ref, symbol, start_date and end_date, once each.')
+        raise HTTPException(422, 'Supply only selection_ref, symbol, start_date and end_date, once each.', headers={'Cache-Control': 'no-store'})
     try:
         start, end = date.fromisoformat(start_date), date.fromisoformat(end_date)
         if start.isoformat() != start_date or end.isoformat() != end_date or not 0 <= (end-start).days < 90:
             raise ValueError('Invalid range')
     except ValueError:
-        raise HTTPException(422, 'Use exact YYYY-MM-DD dates, ordered and at most 90 calendar days inclusive.') from None
+        raise HTTPException(422, 'Use exact YYYY-MM-DD dates, ordered and at most 90 calendar days inclusive.', headers={'Cache-Control': 'no-store'}) from None
     if not request.app.state.real_history_enabled:
-        raise HTTPException(503, 'Provider history is disabled.')
+        raise HTTPException(503, 'Provider history is disabled.', headers={'Cache-Control': 'no-store'})
     try:
         selection = request.app.state.stock_search.resolve(selection_ref, symbol)
         return await request.app.state.historical_data.get_discovered_history(selection, start, end)
@@ -159,7 +168,16 @@ async def discovered_history(request: Request, response: Response,
         content = {'detail': error.detail}
         if isinstance(error, HistoryError) and error.available_range is not None:
             content['available_range'] = error.available_range.model_dump(mode='json')
-        return JSONResponse(status_code=error.status, content=content)
+        return JSONResponse(status_code=error.status, content=content, headers={'Cache-Control': 'no-store'})
+
+
+@app.get('/api/stocks/discovered/history/metrics', response_model=DiscoveredHistoryMetrics)
+async def discovered_metrics(request: Request, response: Response,
+                             selection_ref: str = '', symbol: str = '', start_date: str = '', end_date: str = ''):
+    history = await _discovered_history(request, response, selection_ref, symbol, start_date, end_date)
+    if isinstance(history, JSONResponse):
+        return history
+    return calculate_discovered_history_metrics(history)
 
 
 @app.get('/api/stocks/{symbol}/quote', response_model=Quote)

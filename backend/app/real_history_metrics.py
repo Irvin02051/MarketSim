@@ -3,9 +3,11 @@
 from datetime import datetime
 from typing import Literal
 
+from pydantic import Field
+
 from app.historical_data import DateRange, HistoryModel
 from app.historical_metrics import HistoricalMetric, _calculate_metrics
-from app.real_history import RealHistoryResult
+from app.real_history import DiscoveredHistoryResult, RealHistoryResult
 
 CALCULATION_LIMITATIONS = (
     'Descriptive backend calculations over supplied observations, not forecasts or trading signals.',
@@ -20,10 +22,10 @@ CALCULATION_LIMITATIONS = (
 )
 
 
-class RealHistoryMetrics(HistoryModel):
+class ProviderHistoryMetrics(HistoryModel):
     origin: Literal['backend'] = 'backend'
     calculation_basis: Literal['raw_closing_prices'] = 'raw_closing_prices'
-    symbol: Literal['AAPL', 'MSFT', 'NVDA']
+    symbol: str = Field(pattern=r'^[A-Za-z0-9][A-Za-z0-9.\-^/]{0,31}$')
     currency: Literal['USD']
     source: Literal['alpha_vantage']
     data_kind: Literal['end_of_day']
@@ -49,6 +51,21 @@ class RealHistoryMetrics(HistoryModel):
     calculation_limitations: tuple[str, ...] = CALCULATION_LIMITATIONS
 
 
+class RealHistoryMetrics(ProviderHistoryMetrics):
+    symbol: Literal['AAPL', 'MSFT', 'NVDA']
+
+
+class DiscoveredHistoryMetrics(ProviderHistoryMetrics):
+    pass
+
+
+def calculate_discovered_history_metrics(history: DiscoveredHistoryResult) -> DiscoveredHistoryMetrics:
+    if not isinstance(history, DiscoveredHistoryResult):
+        raise TypeError('Expected a validated DiscoveredHistoryResult.')
+    history = DiscoveredHistoryResult.model_validate(history)
+    return _render_metrics(history, DiscoveredHistoryMetrics)
+
+
 def calculate_real_history_metrics(history: RealHistoryResult) -> RealHistoryMetrics:
     """Revalidate even constructed/mutated instances; never retrieve or mutate data.
 
@@ -59,8 +76,12 @@ def calculate_real_history_metrics(history: RealHistoryResult) -> RealHistoryMet
     if not isinstance(history, RealHistoryResult):
         raise TypeError('Expected a validated RealHistoryResult.')
     history = RealHistoryResult.model_validate(history)
+    return _render_metrics(history, RealHistoryMetrics)
+
+
+def _render_metrics(history, result_type):
     calculated = _calculate_metrics(history.bars)
-    return RealHistoryMetrics(
+    return result_type(
         symbol=history.symbol, currency=history.currency, source=history.source,
         data_kind=history.data_kind, adjustment_basis=history.adjustment_basis,
         interval=history.interval, requested_range=history.requested_range,
