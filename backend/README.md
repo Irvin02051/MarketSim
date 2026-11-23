@@ -1683,8 +1683,8 @@ process-local, so restarts invalidate selections and multiple workers do not sha
 
 The separate `DiscoveredHistoryResult` preserves raw/unadjusted provenance, exact
 symbol, USD currency, requested/available/returned ranges, timestamps, nullable
-volume, coverage and ordered OHLCV bars. Its source limitations do not promise new
-symbol metrics. `RealHistoryResult`, existing history/metrics endpoints, quotes,
+volume, coverage and ordered OHLCV bars. A separate explicit metrics request can
+calculate raw descriptions for this same validated selection. `RealHistoryResult`, existing history/metrics endpoints, quotes,
 research tools, demo fixtures and watchlist database constraints remain three-symbol
 contracts. Selection does not prove an active listing, history availability,
 exchange-calendar completeness, adjustment support or public-display rights.
@@ -1716,3 +1716,56 @@ These checks establish only the tested IBM retrieval, rendering and cache flow.
 They do not establish universal symbol compatibility, exchange-calendar
 completeness, independent price verification, full browser coverage or
 public-display permission. No raw provider bars or credentials are recorded here.
+
+## Explicit raw metrics for discovered equities
+
+`GET /api/stocks/discovered/history/metrics?selection_ref=…&symbol=…&start_date=…&end_date=…`
+uses exactly the discovered-history query rules and both `STOCK_SEARCH_ENABLED=true`
+and `REAL_HISTORY_ENABLED=true`. All four parameters are required once; no other
+parameters or client prices/metadata are accepted. Dates are exact YYYY-MM-DD,
+ordered, inclusive, at most 90 calendar days. Cached discovery must still contain
+the exact symbol: expired, evicted, forged or restarted references return safe 409
+even if history is cached. References are eligibility evidence, not authentication.
+
+The route retrieves history once and calls the separate
+`calculate_discovered_history_metrics(DiscoveredHistoryResult)` adapter. It shares
+the original calculator's arithmetic and rounding; the original
+`calculate_real_history_metrics` still requires its three-symbol result type.
+No formulas, budgets, retries, warm-up retrievals or research tools are added.
+The same snapshot cache, coalescing, HTTPX client and provider attempt budget apply.
+History followed by metrics can reuse the snapshot with its original `fetched_at`;
+calculation itself consumes no provider attempts.
+
+The compact `DiscoveredHistoryMetrics` response contains no bars. It preserves
+exact symbol/USD, alpha_vantage/end_of_day/unadjusted provenance, requested,
+available and returned ranges, timestamp/cache metadata, observation counts and
+separate source/calculation limitations. Four raw statistics retain six-decimal
+strings, actual windows, units and explicit unavailability reasons. Empty or short
+history is a successful calculation result, not a substituted zero.
+
+Both success and safe errors use `Cache-Control: no-store`. Statuses: 200 result;
+409 missing/expired eligibility; 422 malformed query or range unavailable (with
+available bounds when known); 429 local/provider quota; 502 upstream/invalid data;
+503 disabled, missing configuration or concurrency limit; 504 timeout.
+Unexpected calculator defects are not reclassified as user input failures.
+
+Raw price change is not total return. Corporate actions remain unchecked; raw
+variability is not a reliable investment-risk measure. Public display permissions
+remain unresolved; keep this opt-in flow private-local. Offline mocked coverage is supplemented by the user-reported IBM metrics check
+below. The November 20 check above did not exercise discovered metrics.
+
+### User-reported IBM metrics verification — November 23, 2026
+
+- History and raw metrics loaded for October 1–30, 2026, with 22 observations.
+- Raw closing-price change: `14.267352` percent.
+- SMA20: `238.875000` USD.
+- SMA50 unavailable because only 22 observations were supplied.
+- Raw-return sample standard deviation: `1.473776` percent, not annualized.
+- Chart and metrics shared `fetched_at: 2026-11-23T21:04:02.931722Z`;
+  metrics reported cache reuse.
+- The user confirmed date-change clearing and explicit metrics reload worked.
+
+These manual checks verify the tested IBM flow only, not independent provider
+accuracy, universal symbol compatibility, corporate-action adjustments,
+public-display permission or comprehensive browser coverage. Automated frontend
+tests are not mounted-browser coverage.

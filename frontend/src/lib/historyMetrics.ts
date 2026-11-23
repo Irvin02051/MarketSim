@@ -1,5 +1,5 @@
 import { historySymbol, utcDate, validateProviderDates } from './history.ts'
-import type { DateRange, ProviderHistoryResult } from './history.ts'
+import type { DateRange, DiscoveredHistoryResult, ProviderHistoryResult } from './history.ts'
 
 export type RawMetric = {
   status: 'available' | 'unavailable'; value: string | null; unit: 'USD' | 'percent'
@@ -12,6 +12,7 @@ export type HistoryMetrics = Omit<ProviderHistoryResult, 'bars' | 'limitations'>
   raw_return_sample_stddev_20: RawMetric; return_count: number
   source_limitations: string[]; calculation_limitations: string[]
 }
+export type DiscoveredHistoryMetrics = Omit<HistoryMetrics, 'symbol'> & { symbol: string }
 export class HistoryMetricsError extends Error {}
 const invalid = (): never => { throw new HistoryMetricsError('The metrics service returned an invalid response. Try loading metrics again.') }
 const mismatch = (): never => { throw new HistoryMetricsError('The metrics snapshot differs from this chart. Reload history, then explicitly load metrics again.') }
@@ -43,9 +44,20 @@ function timestamp(value: unknown): string {
 }
 // This validates structure and windows, never recalculates prices or metrics.
 export function parseHistoryMetrics(value: unknown): HistoryMetrics {
+  const d = object(value)
+  const symbol = historySymbol(typeof d.symbol === 'string' ? d.symbol : undefined)
+  if (!symbol || symbol !== d.symbol) return invalid()
+  return parseMetrics(value, symbol) as HistoryMetrics
+}
+
+export function parseDiscoveredHistoryMetrics(value: unknown, expectedSymbol: string): DiscoveredHistoryMetrics {
+  if (!/^[A-Za-z0-9][A-Za-z0-9.\-^/]{0,31}$/.test(expectedSymbol)) return invalid()
+  return parseMetrics(value, expectedSymbol)
+}
+
+function parseMetrics(value: unknown, symbol: string): DiscoveredHistoryMetrics {
   try {
     const d = object(value)
-    const symbol = historySymbol(typeof d.symbol === 'string' ? d.symbol : undefined)
     if (!symbol || symbol !== d.symbol || d.origin !== 'backend' || d.calculation_basis !== 'raw_closing_prices'
       || d.currency !== 'USD' || d.source !== 'alpha_vantage' || d.data_kind !== 'end_of_day'
       || d.adjustment_basis !== 'unadjusted' || d.interval !== 'daily' || d.coverage !== 'within_snapshot_bounds'
@@ -100,7 +112,7 @@ export function parseHistoryMetrics(value: unknown): HistoryMetrics {
   } catch { return invalid() }
 }
 
-export function matchHistoryMetrics(metrics: HistoryMetrics, history: ProviderHistoryResult): HistoryMetrics {
+export function matchHistoryMetrics<T extends DiscoveredHistoryMetrics>(metrics: T, history: DiscoveredHistoryResult): T {
   for (const key of ['symbol', 'currency', 'source', 'data_kind', 'adjustment_basis', 'interval',
     'fetched_at', 'coverage', 'status', 'provider_timezone'] as const) {
     if (metrics[key] !== history[key]) return mismatch()
@@ -118,15 +130,29 @@ export function matchHistoryMetrics(metrics: HistoryMetrics, history: ProviderHi
 
 export async function requestHistoryMetrics(base: unknown, history: ProviderHistoryResult,
   signal: AbortSignal, timeoutMs = 10000): Promise<HistoryMetrics> {
+  if (historySymbol(history.symbol) !== history.symbol) throw new HistoryMetricsError('The loaded history selection is invalid.')
+  return requestMetrics(base, history, signal, timeoutMs) as Promise<HistoryMetrics>
+}
+
+export function requestDiscoveredHistoryMetrics(base: unknown, reference: string, history: DiscoveredHistoryResult,
+  signal: AbortSignal, timeoutMs = 10000): Promise<DiscoveredHistoryMetrics> {
+  if (!/^[a-f0-9]{32}$/.test(reference) || !/^[A-Za-z0-9][A-Za-z0-9.\-^/]{0,31}$/.test(history.symbol))
+    return Promise.reject(new HistoryMetricsError('Search again and select a stock before loading metrics.'))
+  return requestMetrics(base, history, signal, timeoutMs, reference)
+}
+
+async function requestMetrics(base: unknown, history: DiscoveredHistoryResult,
+  signal: AbortSignal, timeoutMs: number, reference?: string): Promise<DiscoveredHistoryMetrics> {
   let url: URL
   try {
     if (typeof base !== 'string' || !base.trim()) throw new Error()
     url = new URL(base.trim())
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error()
-    if (historySymbol(history.symbol) !== history.symbol) throw new Error()
     validateProviderDates(history.requested_range)
-    url.pathname = `${url.pathname.replace(/\/+$/, '')}/api/stocks/${history.symbol}/history/provider/metrics`
+    url.pathname = `${url.pathname.replace(/\/+$/, '')}${reference
+      ? '/api/stocks/discovered/history/metrics' : `/api/stocks/${history.symbol}/history/provider/metrics`}`
     url.search = new URLSearchParams({ start_date: history.requested_range.start, end_date: history.requested_range.end }).toString()
+    if (reference) { url.searchParams.set('selection_ref', reference); url.searchParams.set('symbol', history.symbol) }
   } catch { throw new HistoryMetricsError('The backend address or loaded history selection is invalid.') }
   const controller = new AbortController()
   const abort = () => controller.abort()
@@ -147,6 +173,7 @@ export async function requestHistoryMetrics(base: unknown, history: ProviderHist
         credentials: 'omit', cache: 'no-store', redirect: 'error' })
       if (!response.ok) {
         const messages: Record<number, string> = {
+          409: 'Selection expired or unavailable. Use the search form again, select the stock and reload history explicitly.',
           422: 'The metrics range is unavailable or invalid. Reload history, then load metrics again.',
           429: 'The provider request budget or quota is exhausted. Do not repeatedly retry.',
           502: 'The provider could not supply metrics. Try again later.',
@@ -158,7 +185,7 @@ export async function requestHistoryMetrics(base: unknown, history: ProviderHist
       let body: unknown
       try { body = await response.json() } catch { return invalid() }
       controller.signal.throwIfAborted()
-      return matchHistoryMetrics(parseHistoryMetrics(body), history)
+      return matchHistoryMetrics(reference ? parseDiscoveredHistoryMetrics(body, history.symbol) : parseHistoryMetrics(body), history)
     }
     return await Promise.race([work(), cancelled])
   } catch (error) {
@@ -174,10 +201,20 @@ export async function requestHistoryMetrics(base: unknown, history: ProviderHist
 }
 
 export type HistoryMetricsState = { kind: 'idle' } | { kind: 'loading' }
-  | { kind: 'result'; result: HistoryMetrics } | { kind: 'error'; message: string }
+  | { kind: 'result'; result: DiscoveredHistoryMetrics } | { kind: 'error'; message: string }
 // One controller per loaded chart generation. Construction never sends a request.
 export function createHistoryMetricsController(history: ProviderHistoryResult,
   publish: (state: HistoryMetricsState) => void, retrieve = requestHistoryMetrics) {
+  return createMetricsController(history, publish, retrieve as (base: unknown, history: DiscoveredHistoryResult, signal: AbortSignal) => Promise<DiscoveredHistoryMetrics>)
+}
+
+export function createDiscoveredMetricsController(reference: string, history: DiscoveredHistoryResult,
+  publish: (state: HistoryMetricsState) => void, retrieve = requestDiscoveredHistoryMetrics) {
+  return createMetricsController(history, publish, (base, snapshot, signal) => retrieve(base, reference, snapshot, signal))
+}
+
+function createMetricsController(history: DiscoveredHistoryResult, publish: (state: HistoryMetricsState) => void,
+  retrieve: (base: unknown, history: DiscoveredHistoryResult, signal: AbortSignal) => Promise<DiscoveredHistoryMetrics>) {
   const snapshot = structuredClone(history)
   let pending: AbortController | null = null
   let generation = 0

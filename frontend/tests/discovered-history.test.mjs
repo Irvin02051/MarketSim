@@ -91,6 +91,7 @@ test('component handlers load only on submit, cancel on date change and cleanup;
   const component = loadComponent('../src/components/DiscoveredHistory.tsx', {
     react: { ...require('react'), useState: initial => [typeof initial === 'function' ? initial() : initial, () => {}],
       useRef: () => ({ current: null }), useEffect: callback => { cleanup = callback() } },
+    './DiscoveredHistoryMetrics': { __esModule: true, default: () => null },
     './HistoryChart': { __esModule: true, default: () => null },
     '../lib/history': { initialProviderDates: () => ({ ...range }) },
     '../lib/discoveredHistory': { createDiscoveredController: () => controller },

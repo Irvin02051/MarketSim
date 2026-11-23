@@ -1052,8 +1052,9 @@ History errors stay local to the selected panel; search results remain visible.
 The existing chart/table renders the separately validated discovered result, with
 source, raw/unadjusted labels, requested/available/returned ranges, fetch/cache status
 and limitations. Exact punctuation is preserved. Existing `/stocks/:symbol`, quote,
-metrics, research and watchlist features remain AAPL/MSFT/NVDA-only. No Gemini,
-quote or metric request is triggered by this panel. Flags are not authentication or
+research and watchlist features remain AAPL/MSFT/NVDA-only. No Gemini or quote
+request is triggered by this panel. Metrics now require their own explicit click
+after history loads, as described below. Flags are not authentication or
 public-display permission; use private local development only pending data rights.
 
 Offline coverage includes helpers, controllers, static rendering and directly
@@ -1077,3 +1078,64 @@ These checks establish only the tested IBM retrieval, rendering and cache flow.
 They do not establish universal symbol compatibility, exchange-calendar
 completeness, independent price verification, full browser coverage or
 public-display permission. No raw provider bars or credentials are recorded here.
+
+## Raw-price metrics for discovered stocks
+
+After loading discovered history on the search page, **Load raw-price metrics**
+requests `/api/stocks/discovered/history/metrics` using the loaded selection
+reference, exact symbol and requested dates. No request occurs on mount, selection,
+date editing or history completion. The existing search/history flags suffice.
+No new support is added to quotes, research, watchlists or original stock routes.
+
+The shared validator/renderer preserves Decimal strings, units, actual observation
+windows, counts, unavailable reasons and source/calculation limitations. Metrics
+must match the chart's symbol, currency, provenance, source timestamp, all three
+ranges and observation count; cache-hit flags may differ. A mismatched snapshot
+is rejected with an instruction to explicitly reload history, then metrics.
+No automatic reload, retry or extra observations are requested.
+
+Changing search, selection, dates or chart-load generation removes the metrics
+panel and cancels browser waiting. Late responses cannot update the new panel;
+duplicate clicks are gated synchronously. Metrics loading/errors leave the chart
+and search results visible. Expired selection feedback directs the user to use
+the search form again and reload history. Cancellation cannot undo an already
+started provider attempt. A successful load is descriptive, not total return,
+a reliable risk score, an adjustment check or investment advice.
+
+Tests use synthetic observations, mocked fetch, controllers, static rendering and
+directly invoked component handlers. They are not mounted-browser coverage.
+The IBM check below verifies that specific flow; broader live compatibility and
+comprehensive browser usability remain unverified.
+
+Later private-local manual check (consumes provider requests; not automatic):
+1. With the existing backend/frontend search and history flags enabled, search
+   IBM once and select the eligible equity. Load a recent explicit range inside
+   the moving compact snapshot (for example October 24–November 19, 2026, only
+   while still available). Leave research disabled.
+2. In browser Network tools, confirm history completion sends no metrics request.
+   Click **Load raw-price metrics** once; verify exact selection/dates, matching
+   source timestamp/ranges/count and cache reuse when the snapshot remains warm.
+3. Check exact string values, actual metric windows, insufficient-history reasons
+   and raw/unadjusted limitations. No extra observations should be fetched for SMA50.
+4. Edit dates, explicitly reload history or select another result: metrics must
+   clear and old pending results must not reappear. Check keyboard navigation,
+   status announcements and narrow layout. On expiry, search again explicitly;
+   on a changed snapshot, reload history before retrying metrics.
+Do not interpret these checks as independent price accuracy, universal symbol
+support, exchange-calendar completeness or public-display permission.
+
+### User-reported IBM metrics verification — November 23, 2026
+
+- History and raw metrics loaded for October 1–30, 2026, with 22 observations.
+- Raw closing-price change: `14.267352` percent.
+- SMA20: `238.875000` USD.
+- SMA50 unavailable because only 22 observations were supplied.
+- Raw-return sample standard deviation: `1.473776` percent, not annualized.
+- Chart and metrics shared `fetched_at: 2026-11-23T21:04:02.931722Z`;
+  metrics reported cache reuse.
+- The user confirmed date-change clearing and explicit metrics reload worked.
+
+These manual checks verify the tested IBM flow only, not independent provider
+accuracy, universal symbol compatibility, corporate-action adjustments,
+public-display permission or comprehensive browser coverage. Automated frontend
+tests are not mounted-browser coverage.

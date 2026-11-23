@@ -131,7 +131,7 @@ class RealHistoryResult(ProviderHistoryResult):
 class DiscoveredHistoryResult(ProviderHistoryResult):
     limitations: tuple[str, ...] = (
         LIMITATIONS[0],
-        'Discovered history does not enable quotes, metrics, research or watchlists for new symbols.',
+        'Discovered history and raw metrics do not enable quotes, research or watchlists for new symbols.',
         *LIMITATIONS[2:],
     )
 
